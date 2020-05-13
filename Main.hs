@@ -196,7 +196,7 @@ onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (Pow it) f g))) m = do
       x7 <- x6 *^ x5        -- x7 = f^g ln (f) = x6 x5
       x8 <- x7 *^ g'        -- x8 = f^g ln(f) g' = x7 g'
       x9 <- x4 +^ x8        -- x9 = g f^{g - 1} f' + f^g ln(f) g'
-      bindGrads pe' x8
+      bindGrads pe' x9
     m $ oneStm stm <> stms
     
 onStm stm@(Let (Pattern [] [pe]) aux (BasicOp cOp@CmpOp{})) m = m $ oneStm stm
