@@ -44,8 +44,6 @@ instance LocalScope SOACS ADM where
 
 type ADBind = ReaderT IntType (Binder SOACS)
 
--- type ADBind = BinderT SOACS (Reader IntType)
-
 runADM :: MonadFreshNames m => ADM a -> Env -> m a
 runADM (ADM m) env =
   modifyNameSource $ runState (runReaderT m env)
@@ -88,18 +86,6 @@ bindGrads pe' se = do
 
 runADBind :: IntType -> ADBind a -> ADM (Stms SOACS)
 runADBind it m = (runBinder_ . (flip runReaderT) it) m
-
---(^-) :: SubExp -> SubExp -> ADM Exp
---(^-) x y = do it <- asks intType; return $ BasicOp (BinOp (Sub it) x y)
---
---(^*) :: SubExp -> SubExp -> ADM Exp
---(^*) x y = do it <- asks intType; return $ BasicOp (BinOp (Mul it) x y)
-
---sAdd :: (MonadBinder m) => IntType -> SubExp -> SubExp -> m SubExp
---sAdd it x y = letSubExp "x+y" $ BasicOp (BinOp (Add it) x y)
---
---sSub :: (MonadBinder m) => IntType -> SubExp -> SubExp -> m SubExp
---sSub it x y = letSubExp "x-y" $ BasicOp (BinOp (Sub it) x y)
 
 -- | Create a zero gradient of the desired type.
 zeroGrad :: Type -> ADM SubExp
@@ -219,11 +205,6 @@ onStms stms m
         Body _ stms_tail' res <- onStms stms_tail m
         return $ mkBody (stm_stms<>stms_tail') res
   | otherwise = m
-
-
---(^+) :: SubExp -> SubExp -> ADM SubExp
---(^+) x y = letSubExp "x8" $ BasicOp $ BinOp (Add it) x y
-  
 
 onBody :: Body -> ADM Body
 onBody (Body _ stms res) =
