@@ -1,2 +1,5 @@
+let f (x : i32) (y : i32) =
+  x * y
+
 let main (x: i32) =
-  2 * x + 3
+  f x x + 3 - 2

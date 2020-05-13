@@ -6,7 +6,9 @@ import Control.Category ((>>>))
 import Control.Monad.Reader
 import Control.Monad.State
 import qualified Data.Map as M
+import Data.Loc
 import System.Environment (getArgs)
+import Data.Functor.Identity
 
 import Futhark.Binder
 import Futhark.Construct
@@ -17,6 +19,7 @@ import Futhark.Actions (printAction)
 import Futhark.MonadFreshNames
 import Futhark.Pass
 import Futhark.Representation.SOACS
+import Futhark.Representation.Primitive
 import Futhark.Util.Pretty (pretty)
 
 data Env = Env { envGrads :: M.Map VName VName
@@ -39,9 +42,64 @@ instance HasScope SOACS ADM where
 instance LocalScope SOACS ADM where
   localScope scope = local $ \env -> env { envScope = scope <> envScope env }
 
+type ADBind = ReaderT IntType (Binder SOACS)
+
+-- type ADBind = BinderT SOACS (Reader IntType)
+
 runADM :: MonadFreshNames m => ADM a -> Env -> m a
 runADM (ADM m) env =
   modifyNameSource $ runState (runReaderT m env)
+
+($^) :: String -> SubExp -> ADBind SubExp
+($^) f x = lift $ letSubExp "f x" $ Apply (nameFromString f) [(x, Observe)] [primRetType rt] (Safe, noLoc, mempty)
+  where Just (_, rt, _) = M.lookup f primFuns
+
+(+^) :: SubExp -> SubExp -> ADBind SubExp
+(+^) x y = do
+  it <- ask
+  lift $ letSubExp "x+y" $ BasicOp (BinOp (Add it) x y)
+
+(-^) :: SubExp -> SubExp -> ADBind SubExp
+(-^) x y = do
+  it <- ask
+  lift $ letSubExp "x-y" $ BasicOp (BinOp (Sub it) x y)
+
+(*^) :: SubExp -> SubExp -> ADBind SubExp
+(*^) x y = do
+  it <- ask
+  lift $ letSubExp "x*y" $ BasicOp (BinOp (Mul it) x y)
+
+(**^) :: SubExp -> SubExp -> ADBind SubExp
+(**^) x y = do
+  it <- ask
+  lift $ letSubExp "x^y" $ BasicOp (BinOp (Pow it) x y)
+
+mkInt :: IntType -> Int -> SubExp
+mkInt it = Constant . IntValue . chooseBits it
+  where chooseBits Int8  = Int8Value . toEnum
+        chooseBits Int16 = Int16Value . toEnum
+        chooseBits Int32 = Int32Value . toEnum
+        chooseBits Int64 = Int64Value . toEnum
+
+bindGrads :: PatElem -> SubExp -> ADBind ()
+bindGrads pe' se = do
+  e <- lift $ eSubExp se
+  lift $ letBindNames_ [patElemName pe'] e
+
+runADBind :: IntType -> ADBind a -> ADM (Stms SOACS)
+runADBind it m = (runBinder_ . (flip runReaderT) it) m
+
+--(^-) :: SubExp -> SubExp -> ADM Exp
+--(^-) x y = do it <- asks intType; return $ BasicOp (BinOp (Sub it) x y)
+--
+--(^*) :: SubExp -> SubExp -> ADM Exp
+--(^*) x y = do it <- asks intType; return $ BasicOp (BinOp (Mul it) x y)
+
+--sAdd :: (MonadBinder m) => IntType -> SubExp -> SubExp -> m SubExp
+--sAdd it x y = letSubExp "x+y" $ BasicOp (BinOp (Add it) x y)
+--
+--sSub :: (MonadBinder m) => IntType -> SubExp -> SubExp -> m SubExp
+--sSub it x y = letSubExp "x-y" $ BasicOp (BinOp (Sub it) x y)
 
 -- | Create a zero gradient of the desired type.
 zeroGrad :: Type -> ADM SubExp
@@ -86,34 +144,73 @@ withGrad pe m = do
   local f $ m pe'
 
 onStm :: Stm -> (Stms SOACS -> ADM a) -> ADM a
-
 onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (SubExp se))) m = do
   se' <- subExpGrad se
   withGrad pe $ \pe' ->
     m $
     oneStm stm <>
     oneStm (Let (Pattern [] [pe']) aux (BasicOp (SubExp se')))
+    
+onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (Add it) x y))) m = do
+  x' <- subExpGrad x
+  y' <- subExpGrad y
+  withGrad pe $ \pe' -> do
+    stms <- runADBind it $ do
+          x1 <- x' +^ y'
+          bindGrads pe' x1
+    m $ oneStm stm <> stms
+
+onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (Sub it) x y))) m = do
+  x' <- subExpGrad x
+  y' <- subExpGrad y
+  withGrad pe $ \pe' -> do
+    stms <- runADBind it $ do
+          x1 <- x' -^ y'
+          bindGrads pe' x1
+    m $ oneStm stm <> stms
 
 onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (Mul it) x y))) m = do
   x' <- subExpGrad x
   y' <- subExpGrad y
   withGrad pe $ \pe' -> do
-    stms <- runBinder_ $ do
-      a <- letSubExp "a" $ BasicOp $ BinOp (Mul it) x' y
-      b <- letSubExp "b" $ BasicOp $ BinOp (Mul it) x y'
-      letBindNames_ [patElemName pe'] $ BasicOp $ BinOp (Add it) a b
+    stms <- runADBind it $ do
+      x1 <- x' *^ y
+      x2 <- x *^ y'
+      x3 <- x1 +^ x2
+      bindGrads pe' x3
     m $ oneStm stm <> stms
 
-onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (Add it) x y))) m = do
-  x' <- subExpGrad x
-  y' <- subExpGrad y
+-- d/dx (f^g) =  g f^{g - 1} f' + f^g ln(f) g' if f(x) > 0
+-- https://en.wikipedia.org/wiki/Differentiation_rules
+onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (Pow it) f g))) m = do
+  f' <- subExpGrad f
+  g' <- subExpGrad g
+  withGrad pe $ \pe' -> do
+    stms <- runADBind it $ do
+      x1 <- g -^ mkInt it 1 -- x1 = g - 1
+      x2 <- f **^ x1        -- x2 = f^x1 = f^{g - 1}
+      x3 <- g *^ x2         -- x3 = g f^{g-1} = g x2
+      x4 <- x3 *^ f'        -- x4 = g f^{g-1} f' = x3 f'
+      x5 <- "log32" $^ f    -- x5 = log (f)  Probably should intelligently select log32 or log64
+      x6 <- f **^g          -- x6 = f^g
+      x7 <- x6 *^ x5        -- x7 = f^g ln (f) = x6 x5
+      x8 <- x7 *^ g'        -- x8 = f^g ln(f) g' = x7 g'
+      x9 <- x4 +^ x8        -- x9 = g f^{g - 1} f' + f^g ln(f) g'
+      bindGrads pe' x8
+    m $ oneStm stm <> stms
+    
+onStm stm@(Let (Pattern [] [pe]) aux (BasicOp cOp@CmpOp{})) m = m $ oneStm stm
+
+onStm stm@(Let (Pattern [] [pe]) aux (If cond t f attr)) m = do
+  t' <- onBody t
+  f' <- onBody f
   withGrad pe $ \pe' ->
     m $
     oneStm stm <>
-    oneStm (Let (Pattern [] [pe']) aux (BasicOp (BinOp (Add it) x' y')))
+    oneStm (Let (Pattern [] [pe']) aux (If cond t' f' attr))
 
 onStm stm _ =
-  error $ "unhandled AD for Stm: " ++ pretty stm
+  error $ "unhandled AD for Stm: " ++ pretty stm ++ "\n" ++ show stm
 
 onStms :: Stms SOACS -> ADM Body -> ADM Body
 onStms stms m
@@ -122,6 +219,11 @@ onStms stms m
         Body _ stms_tail' res <- onStms stms_tail m
         return $ mkBody (stm_stms<>stms_tail') res
   | otherwise = m
+
+
+--(^+) :: SubExp -> SubExp -> ADM SubExp
+--(^+) x y = letSubExp "x8" $ BasicOp $ BinOp (Add it) x y
+  
 
 onBody :: Body -> ADM Body
 onBody (Body _ stms res) =
