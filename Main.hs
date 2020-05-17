@@ -1,32 +1,58 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE MultiParamTypeClasses      #-}
 module Main (main) where
 
-import Control.Category ((>>>))
-import Control.Monad.Reader
-import Control.Monad.State
-import qualified Data.Map as M
-import Data.Loc
-import System.Environment (getArgs)
-import Data.Functor.Identity
+import           Control.Category                          ((>>>))
+import           Control.Monad
+import           Control.Monad.Reader
+import           Control.Monad.State
+import           Data.Functor.Identity
+import           Data.List                                 (sortOn)
+import           Data.Loc
+import qualified Data.Map                                  as M
+import           Data.Maybe
+import qualified Data.Text                                 as T
+import qualified Data.Text.IO                              as T
+import           Debug.Trace
+import           GHC.IO.Encoding                           (setLocaleEncoding)
+import           System.Directory
+import           System.Environment                        (getArgs)
+import           System.Environment
+import           System.Exit
+import           System.FilePath
+import           System.IO
 
-import Futhark.Binder
-import Futhark.Construct
-import Futhark.Compiler (runCompilerOnProgram, newFutharkConfig)
-import Futhark.Pipeline (onePass)
-import Futhark.Passes (standardPipeline)
-import Futhark.Actions (printAction)
-import Futhark.MonadFreshNames
-import Futhark.Pass
-import Futhark.Representation.SOACS
-import Futhark.Representation.Primitive
-import Futhark.Util.Pretty (pretty)
+import           Futhark.Actions                           (printAction)
+import           Futhark.Binder
+import qualified Futhark.CodeGen.Backends.SequentialC      as SequentialC
+import qualified Futhark.CodeGen.Backends.SequentialPython as SequentialPy
+import           Futhark.Compiler                          (newFutharkConfig,
+                                                            runCompilerOnProgram)
+import           Futhark.Compiler.CLI
+import           Futhark.Construct
+import           Futhark.MonadFreshNames
+import           Futhark.Optimise.CSE
+import           Futhark.Optimise.InPlaceLowering
+import           Futhark.Pass
+import qualified Futhark.Pass.ExplicitAllocations.Seq      as Seq
+import           Futhark.Pass.FirstOrderTransform
+import           Futhark.Pass.Simplify
+import           Futhark.Passes                            (standardPipeline)
+import           Futhark.Pipeline
+import           Futhark.Representation.Primitive
+import           Futhark.Representation.Seq                (Seq)
+import           Futhark.Representation.SeqMem             (SeqMem)
+import           Futhark.Representation.SOACS
+import           Futhark.Util
+import           Futhark.Util.Options
+import           Futhark.Util.Pretty                       (pretty)
 
-data Env = Env { envGrads :: M.Map VName VName
-                 -- ^ If something is not in this map, then it has a
-                 -- gradient of zero.
-               , envScope :: Scope SOACS
-               }
+
+data Env = Env
+    { envGrads :: M.Map VName VName
+    -- ^ If something is not in this map, then it has a
+    , envScope :: Scope SOACS
+    }
 
 -- A handy monad that keeps track of the most important information we
 -- will need: type information, a source of fresh names, a mapping
@@ -42,7 +68,19 @@ instance HasScope SOACS ADM where
 instance LocalScope SOACS ADM where
   localScope scope = local $ \env -> env { envScope = scope <> envScope env }
 
-type ADBind = ReaderT IntType (Binder SOACS)
+data BEnv = BEnv
+    { intType   :: IntType
+    , floatType :: FloatType
+    , overflow  :: Overflow
+    }
+
+defEnv :: BEnv
+defEnv = BEnv { intType = Int32
+              , floatType = Float32
+              , overflow = OverflowWrap
+              }
+
+type ADBind = ReaderT BEnv (Binder SOACS)
 
 runADM :: MonadFreshNames m => ADM a -> Env -> m a
 runADM (ADM m) env =
@@ -54,38 +92,70 @@ runADM (ADM m) env =
 
 (+^) :: SubExp -> SubExp -> ADBind SubExp
 (+^) x y = do
-  it <- ask
-  lift $ letSubExp "x+y" $ BasicOp (BinOp (Add it) x y)
+  it  <- asks intType
+  ovf <- asks overflow
+  lift $ letSubExp "x+^y" $ BasicOp (BinOp (Add it ovf) x y)
+  
+(+^.) :: SubExp -> SubExp -> ADBind SubExp
+(+^.) x y = do
+  ft <- asks floatType
+  lift $ letSubExp "x+^.y" $ BasicOp (BinOp (FAdd ft) x y)
 
 (-^) :: SubExp -> SubExp -> ADBind SubExp
 (-^) x y = do
-  it <- ask
-  lift $ letSubExp "x-y" $ BasicOp (BinOp (Sub it) x y)
+  it  <- asks intType
+  ovf <- asks overflow
+  lift $ letSubExp "x-^y" $ BasicOp (BinOp (Sub it ovf) x y)
+
+(-^.) :: SubExp -> SubExp -> ADBind SubExp
+(-^.) x y = do
+  ft <- asks floatType
+  lift $ letSubExp "x-^.y" $ BasicOp (BinOp (FSub ft) x y)
 
 (*^) :: SubExp -> SubExp -> ADBind SubExp
 (*^) x y = do
-  it <- ask
-  lift $ letSubExp "x*y" $ BasicOp (BinOp (Mul it) x y)
+  it  <- asks intType
+  ovf <- asks overflow
+  lift $ letSubExp "x*^y" $ BasicOp (BinOp (Mul it ovf) x y)
+  
+(*^.) :: SubExp -> SubExp -> ADBind SubExp
+(*^.) x y = do
+  ft <- asks floatType
+  lift $ letSubExp "x*^.y" $ BasicOp (BinOp (FMul ft) x y)
+
+(//^) :: SubExp -> SubExp -> ADBind SubExp
+(//^) x y = do
+  it <- asks intType
+  lift $ letSubExp "x//^y" $ BasicOp (BinOp (SDiv it) x y)
+
+(/^.) :: SubExp -> SubExp -> ADBind SubExp
+(/^.) x y = do
+  ft <- asks floatType
+  lift $ letSubExp "x/^.y" $ BasicOp (BinOp (FDiv ft) x y)
 
 (**^) :: SubExp -> SubExp -> ADBind SubExp
 (**^) x y = do
-  it <- ask
-  lift $ letSubExp "x^y" $ BasicOp (BinOp (Pow it) x y)
+  it <- asks intType
+  lift $ letSubExp "x**^y" $ BasicOp (BinOp (Pow it) x y)
+  
+(**^.) :: SubExp -> SubExp -> ADBind SubExp
+(**^.) x y = do
+  ft <- asks floatType
+  lift $ letSubExp "x**^.y" $ BasicOp (BinOp (FPow ft) x y)
 
-mkInt :: IntType -> Int -> SubExp
-mkInt it = Constant . IntValue . chooseBits it
-  where chooseBits Int8  = Int8Value . toEnum
-        chooseBits Int16 = Int16Value . toEnum
-        chooseBits Int32 = Int32Value . toEnum
-        chooseBits Int64 = Int64Value . toEnum
+mkInt :: (Integral i) => IntType -> i -> SubExp
+mkInt it = Constant . IntValue . intValue it
+        
+mkFloat :: (Real num) => FloatType -> num -> SubExp
+mkFloat ft = Constant . FloatValue . floatValue ft
 
 bindGrads :: PatElem -> SubExp -> ADBind ()
 bindGrads pe' se = do
   e <- lift $ eSubExp se
   lift $ letBindNames_ [patElemName pe'] e
 
-runADBind :: IntType -> ADBind a -> ADM (Stms SOACS)
-runADBind it m = (runBinder_ . (flip runReaderT) it) m
+runADBind :: BEnv -> ADBind a -> ADM (Stms SOACS)
+runADBind env m = (runBinder_ . (flip runReaderT) env) m
 
 -- | Create a zero gradient of the desired type.
 zeroGrad :: Type -> ADM SubExp
@@ -98,7 +168,7 @@ subExpGrad (Var v) = do
   t <- lookupType v
   maybe_grad <- asks $ M.lookup v . envGrads
   case maybe_grad of
-    Nothing -> zeroGrad t
+    Nothing   -> zeroGrad t
     Just grad -> return $ Var grad
 
 gradParam :: Param attr -> ADM (Param attr)
@@ -129,6 +199,14 @@ withGrad pe m = do
                   }
   local f $ m pe'
 
+withGradParams :: [Param attr] -> ([Param attr] -> ADM a) -> ADM a
+withGradParams params m = do
+  params' <- mapM gradParam params
+  let f env = env { envGrads = M.fromList (zip (map paramName params) (map paramName params'))
+                               `M.union` envGrads env
+                  }
+  local f $ m params'
+
 onStm :: Stm -> (Stms SOACS -> ADM a) -> ADM a
 onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (SubExp se))) m = do
   se' <- subExpGrad se
@@ -136,35 +214,138 @@ onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (SubExp se))) m = do
     m $
     oneStm stm <>
     oneStm (Let (Pattern [] [pe']) aux (BasicOp (SubExp se')))
-    
-onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (Add it) x y))) m = do
+
+onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (Opaque se))) m = do
+  se' <- subExpGrad se
+  withGrad pe $ \pe' ->
+    m $
+    oneStm stm <>
+    oneStm (Let (Pattern [] [pe']) aux (BasicOp (Opaque se')))
+
+onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (ArrayLit ses t))) m = do
+  ses' <- mapM subExpGrad ses
+  withGrad pe $ \pe' ->
+    m $
+    oneStm stm <>
+    oneStm (Let (Pattern [] [pe']) aux (BasicOp (ArrayLit ses' t)))
+
+onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (UnOp op x))) m = do
+  x' <- subExpGrad x
+  withGrad pe $ \pe' ->
+    m $
+    oneStm stm <>
+    oneStm (Let (Pattern [] [pe']) aux (BasicOp (UnOp op x')))
+
+onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (Add it ovf) x y))) m = do
   x' <- subExpGrad x
   y' <- subExpGrad y
   withGrad pe $ \pe' -> do
-    stms <- runADBind it $ do
+    stms <- runADBind (defEnv { intType = it, overflow = ovf})  $ do
           x1 <- x' +^ y'
           bindGrads pe' x1
     m $ oneStm stm <> stms
-
-onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (Sub it) x y))) m = do
+    
+onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (FAdd ft) x y))) m = do
   x' <- subExpGrad x
   y' <- subExpGrad y
   withGrad pe $ \pe' -> do
-    stms <- runADBind it $ do
-          x1 <- x' -^ y'
+    stms <- runADBind (defEnv { floatType = ft }) $ do
+          x1 <- x' +^. y'
           bindGrads pe' x1
     m $ oneStm stm <> stms
 
-onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (Mul it) x y))) m = do
+onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (Sub it ovf) x y))) m = do
   x' <- subExpGrad x
   y' <- subExpGrad y
   withGrad pe $ \pe' -> do
-    stms <- runADBind it $ do
+    stms <- runADBind (defEnv { intType = it, overflow = ovf} ) $ do
+          x1 <- x' -^ y'
+          bindGrads pe' x1
+    m $ oneStm stm <> stms
+    
+onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (FSub ft) x y))) m = do
+  x' <- subExpGrad x
+  y' <- subExpGrad y
+  withGrad pe $ \pe' -> do
+    stms <- runADBind (defEnv { floatType = ft } ) $ do
+          x1 <- x' -^. y'
+          bindGrads pe' x1
+    m $ oneStm stm <> stms
+
+onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (Mul it ovf) x y))) m = do
+  x' <- subExpGrad x
+  y' <- subExpGrad y
+  withGrad pe $ \pe' -> do
+    stms <- runADBind (defEnv { intType = it, overflow = ovf }) $ do
       x1 <- x' *^ y
       x2 <- x *^ y'
       x3 <- x1 +^ x2
       bindGrads pe' x3
     m $ oneStm stm <> stms
+    
+onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (FMul ft) x y))) m = do
+  x' <- subExpGrad x
+  y' <- subExpGrad y
+  withGrad pe $ \pe' -> do
+    stms <- runADBind (defEnv { floatType = ft }) $ do
+      x1 <- x' *^. y
+      x2 <- x *^. y'
+      x3 <- x1 +^. x2
+      bindGrads pe' x3
+    m $ oneStm stm <> stms
+
+-- Derivatives are signed (maybe they shouldn't be?)
+onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (UDiv it) x y))) m = do
+  x' <- subExpGrad x
+  y' <- subExpGrad y
+  withGrad pe $ \pe' -> do
+    stms <- runADBind (defEnv { intType = it }) $ do
+      x1 <- x' *^ y
+      x2 <- x *^ y'
+      x3 <- x1 -^ x2
+      x4 <- y *^ y
+      x5 <- x3 //^ x4
+      bindGrads pe' x5
+    m $ oneStm stm <> stms
+
+onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (SDiv it) x y))) m = do
+  x' <- subExpGrad x
+  y' <- subExpGrad y
+  withGrad pe $ \pe' -> do
+    stms <- runADBind (defEnv { intType = it }) $ do
+      x1 <- x' *^ y
+      x2 <- x *^ y'
+      x3 <- x1 -^ x2
+      x4 <- y *^ y
+      x5 <- x3 //^ x4
+      bindGrads pe' x5
+    m $ oneStm stm <> stms
+
+onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (FDiv ft) x y))) m = do
+  x' <- subExpGrad x
+  y' <- subExpGrad y
+  withGrad pe $ \pe' -> do
+    stms <- runADBind (defEnv { floatType = ft }) $ do
+      x1 <- x' *^. y
+      x2 <- x *^. y'
+      x3 <- x1 -^. x2
+      x4 <- y *^. y
+      x5 <- x3 /^. x4
+      bindGrads pe' x5
+    m $ oneStm stm <> stms
+
+onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (ConvOp op x))) m = do
+  x' <- subExpGrad x
+  withGrad pe $ \pe' ->
+    m $
+    oneStm stm <>
+    oneStm (Let (Pattern [] [pe']) aux (BasicOp (ConvOp op x')))
+
+onStm stm@(Let (Pattern [] [pe]) aux assert@(BasicOp (Assert x err (loc, locs)))) m =
+  withGrad pe $ \pe' -> do
+    m $
+      oneStm stm <>
+      oneStm (Let (Pattern [] [pe']) aux assert)
 
 -- d/dx (f^g) =  g f^{g - 1} f' + f^g ln(f) g' if f(x) > 0
 -- https://en.wikipedia.org/wiki/Differentiation_rules
@@ -172,7 +353,7 @@ onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (Pow it) f g))) m = do
   f' <- subExpGrad f
   g' <- subExpGrad g
   withGrad pe $ \pe' -> do
-    stms <- runADBind it $ do
+    stms <- runADBind (defEnv { intType = it }) $ do
       x1 <- g -^ mkInt it 1 -- x1 = g - 1
       x2 <- f **^ x1        -- x2 = f^x1 = f^{g - 1}
       x3 <- g *^ x2         -- x3 = g f^{g-1} = g x2
@@ -185,7 +366,28 @@ onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (Pow it) f g))) m = do
       bindGrads pe' x9
     m $ oneStm stm <> stms
     
-onStm stm@(Let (Pattern [] [pe]) aux (BasicOp cOp@CmpOp{})) m = m $ oneStm stm
+onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (BinOp (FPow ft) f g))) m = do
+  f' <- subExpGrad f
+  g' <- subExpGrad g
+  withGrad pe $ \pe' -> do
+    stms <- runADBind (defEnv { floatType = ft }) $ do
+      x1 <- g -^. mkFloat ft 1 -- x1 = g - 1
+      x2 <- f **^. x1        -- x2 = f^x1 = f^{g - 1}
+      x3 <- g *^. x2         -- x3 = g f^{g-1} = g x2
+      x4 <- x3 *^. f'        -- x4 = g f^{g-1} f' = x3 f'
+      x5 <- "log32" $^ f    -- x5 = log (f)  Probably should intelligently select log32 or log64
+      x6 <- f **^. g          -- x6 = f^g
+      x7 <- x6 *^. x5        -- x7 = f^g ln (f) = x6 x5
+      x8 <- x7 *^. g'        -- x8 = f^g ln(f) g' = x7 g'
+      x9 <- x4 +^. x8        -- x9 = g f^{g - 1} f' + f^g ln(f) g'
+      bindGrads pe' x9
+    m $ oneStm stm <> stms
+
+onStm stm@(Let (Pattern [] [pe]) aux cOp@(BasicOp CmpOp{})) m =
+  withGrad pe $ \pe' -> do
+    m $
+      oneStm stm <>
+      oneStm (Let (Pattern [] [pe']) aux cOp)
 
 onStm stm@(Let (Pattern [] [pe]) aux (If cond t f attr)) m = do
   t' <- onBody t
@@ -194,6 +396,36 @@ onStm stm@(Let (Pattern [] [pe]) aux (If cond t f attr)) m = do
     m $
     oneStm stm <>
     oneStm (Let (Pattern [] [pe']) aux (If cond t' f' attr))
+
+    -- ^ @loop {a} = {v} (for i < n|while b) do b@.  The merge
+    -- parameters are divided into context and value part.
+--onStm stm@(Let (Pattern [] [pe]) aux (DoLoop [(FParam lore, SubExp)] [(FParam lore, SubExp)] (LoopForm lore) (BodyT lore))) m = do
+
+onStm stm@(Let (Pattern [] [pe]) aux (DoLoop ctx val (WhileLoop v) body)) m = do
+  body' <- onBody body
+  let (ctxParams, ctxSes) = unzip ctx
+  ctxSes' <- mapM subExpGrad ctxSes 
+  withGradParams ctxParams $ \ctxParams' ->
+    withGrad pe $ \pe' ->
+      m $
+      oneStm stm <>
+      oneStm (Let (Pattern [] [pe]) aux (DoLoop (zip ctxParams' ctxSes') val (WhileLoop v) body'))
+
+
+--gradParam :: Param attr -> ADM (Param attr)
+--gradParam (Param p t) = do
+--  Param <$> newVName (baseString p <> "_grad") <*> pure t
+
+
+    
+--withGrad :: PatElem -> (PatElem -> ADM a) -> ADM a
+--withGrad pe m = do
+--  pe' <- gradPatElem pe
+--  let f env = env { envGrads = M.insert (patElemName pe) (patElemName pe') $
+--                               envGrads env
+--                  }
+--  local f $ m pe'
+  
 
 onStm stm _ =
   error $ "unhandled AD for Stm: " ++ pretty stm ++ "\n" ++ show stm
@@ -223,6 +455,7 @@ onFun consts fundef = do
     return fundef { funDefParams = funDefParams fundef ++ gradient_params
                   , funDefBody = body_with_gradients
                   , funDefRetType = funDefRetType fundef ++ funDefRetType fundef
+                  , funDefEntryPoint = (\(a, r) -> (a ++ a, r ++ r)) <$> (funDefEntryPoint fundef)
                   }
 
 adPass :: Pass SOACS SOACS
@@ -232,11 +465,71 @@ adPass =
        , passFunction = intraproceduralTransformationWithConsts pure onFun
        }
 
+pass :: String -> [String] -> IO ()
+pass _ [file] = do
+              runCompilerOnProgram
+               newFutharkConfig
+               (standardPipeline >>> onePass adPass)
+               printAction
+               file
+
+mkPython :: String -> [String] -> IO ()
+mkPython = compilerMain () []
+       "Compile sequential Python" "Generate sequential Python code from optimised Futhark program."
+       sequentialCpuADPipeline $ \() mode outpath prog -> do
+          let class_name =
+                case mode of ToLibrary    -> Just $ takeBaseName outpath
+                             ToExecutable -> Nothing
+          pyprog <- SequentialPy.compileProg class_name prog
+
+          case mode of
+            ToLibrary ->
+              liftIO $ writeFile (outpath `addExtension` "py") pyprog
+            ToExecutable -> liftIO $ do
+              writeFile outpath pyprog
+              perms <- liftIO $ getPermissions outpath
+              setPermissions outpath $ setOwnerExecutable True perms
+
+sequentialADPipeline :: Pipeline SOACS Seq
+sequentialADPipeline =
+  standardPipeline >>>
+  onePass adPass >>>
+  onePass firstOrderTransform >>>
+  passes [ simplifySeq
+         , inPlaceLoweringSeq
+         ]
+
+sequentialCpuADPipeline :: Pipeline SOACS SeqMem
+sequentialCpuADPipeline =
+  sequentialADPipeline >>>
+  onePass Seq.explicitAllocations >>>
+  passes [ performCSE False
+         , simplifySeqMem
+         , simplifySeqMem
+         ]
+
+type Command = String -> [String] -> IO ()
+commands :: [(String, (Command, String))]
+commands = sortOn fst
+           [ ("pass", (pass, ""))
+           , ("python", (mkPython, ""))
+           ]
+
+msg :: String
+msg = unlines $
+      ["<command> options...", "Commands:", ""] ++
+      [ "   " <> cmd <> replicate (k - length cmd) ' ' <> desc
+      | (cmd, (_, desc)) <- commands ]
+  where k = maximum (map (length . fst) commands) + 3
+
 main :: IO ()
 main = do
-  [file] <- getArgs
-  runCompilerOnProgram
-    newFutharkConfig
-    (standardPipeline >>> onePass adPass)
-    printAction
-    file
+  hSetEncoding stdout utf8
+  hSetEncoding stderr utf8
+  setLocaleEncoding utf8
+  args <- getArgs
+  prog <- getProgName
+  case args of
+    cmd:args'
+      | Just (m, _) <- lookup cmd commands -> m (unwords [prog, cmd]) args'
+    _ -> mainWithOptions () [] msg (const . const Nothing) prog args
