@@ -1,1 +1,1 @@
-let main (x: i32) = loop a = 1 while a < 10 do a + 1
+let main (x: i32) = loop (n,e) = (1,x) while n < 2 do (n+1, x*x)

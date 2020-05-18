@@ -199,6 +199,14 @@ withGrad pe m = do
                   }
   local f $ m pe'
 
+withGrads :: [PatElem] -> ([PatElem] -> ADM a) -> ADM a
+withGrads pes m = do
+  pes' <- mapM gradPatElem pes
+  let f env = env { envGrads = M.fromList (zip (map patElemName pes) (map patElemName pes'))
+                               `M.union` envGrads env
+                  }
+  local f $ m pes'
+
 withGradParams :: [Param attr] -> ([Param attr] -> ADM a) -> ADM a
 withGradParams params m = do
   params' <- mapM gradParam params
@@ -397,35 +405,14 @@ onStm stm@(Let (Pattern [] [pe]) aux (If cond t f attr)) m = do
     oneStm stm <>
     oneStm (Let (Pattern [] [pe']) aux (If cond t' f' attr))
 
-    -- ^ @loop {a} = {v} (for i < n|while b) do b@.  The merge
-    -- parameters are divided into context and value part.
---onStm stm@(Let (Pattern [] [pe]) aux (DoLoop [(FParam lore, SubExp)] [(FParam lore, SubExp)] (LoopForm lore) (BodyT lore))) m = do
-
-onStm stm@(Let (Pattern [] [pe]) aux (DoLoop ctx val (WhileLoop v) body)) m = do
-  body' <- onBody body
-  let (ctxParams, ctxSes) = unzip ctx
-  ctxSes' <- mapM subExpGrad ctxSes 
-  withGradParams ctxParams $ \ctxParams' ->
-    withGrad pe $ \pe' ->
+onStm stm@(Let (Pattern [] pes) aux (DoLoop [] valPats (WhileLoop v) body)) m = do
+  let (valParams, vals) = unzip valPats
+  vals' <- mapM subExpGrad vals
+  withGradParams valParams $ \valParams' -> do
+    body' <- onBody body
+    withGrads pes $ \pes' -> do
       m $
-      oneStm stm <>
-      oneStm (Let (Pattern [] [pe]) aux (DoLoop (zip ctxParams' ctxSes') val (WhileLoop v) body'))
-
-
---gradParam :: Param attr -> ADM (Param attr)
---gradParam (Param p t) = do
---  Param <$> newVName (baseString p <> "_grad") <*> pure t
-
-
-    
---withGrad :: PatElem -> (PatElem -> ADM a) -> ADM a
---withGrad pe m = do
---  pe' <- gradPatElem pe
---  let f env = env { envGrads = M.insert (patElemName pe) (patElemName pe') $
---                               envGrads env
---                  }
---  local f $ m pe'
-  
+        oneStm (Let (Pattern [] (pes ++ pes')) aux (DoLoop [] (valPats ++ (zip valParams' vals')) (WhileLoop v) body'))
 
 onStm stm _ =
   error $ "unhandled AD for Stm: " ++ pretty stm ++ "\n" ++ show stm
