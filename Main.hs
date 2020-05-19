@@ -161,6 +161,13 @@ runADBind env m = (runBinder_ . (flip runReaderT) env) m
 zeroGrad :: Type -> ADM SubExp
 zeroGrad (Prim t) = return $ constant $ blankPrimValue t
 
+gradVName :: VName -> ADM VName
+gradVName n = do
+ maybe_grad <- asks $ M.lookup n . envGrads
+ case maybe_grad of
+   Nothing -> error "oops"
+   Just grad -> return grad
+
 subExpGrad :: SubExp -> ADM SubExp
 subExpGrad (Constant v) =
   zeroGrad $ Prim $ primValueType v
@@ -232,6 +239,7 @@ onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (Opaque se))) m = do
 
 onStm stm@(Let (Pattern [] [pe]) aux (BasicOp (ArrayLit ses t))) m = do
   ses' <- mapM subExpGrad ses
+  traceM $ pretty stm
   withGrad pe $ \pe' ->
     m $
     oneStm stm <>
@@ -411,8 +419,27 @@ onStm stm@(Let (Pattern [] pes) aux (DoLoop [] valPats (WhileLoop v) body)) m = 
   withGradParams valParams $ \valParams' -> do
     body' <- onBody body
     withGrads pes $ \pes' -> do
-      m $
-        oneStm (Let (Pattern [] (pes ++ pes')) aux (DoLoop [] (valPats ++ (zip valParams' vals')) (WhileLoop v) body'))
+      m $ oneStm (Let (Pattern [] (pes ++ pes')) aux (DoLoop [] (valPats ++ (zip valParams' vals')) (WhileLoop v) body'))
+
+onStm stm@(Let (Pattern [] pes) aux (DoLoop [] valPats (ForLoop v it bound []) body)) m = do
+  let (valParams, vals) = unzip valPats
+  vals' <- mapM subExpGrad vals
+  withGradParams valParams $ \valParams' -> do
+    body' <- onBody body
+    withGrads pes $ \pes' -> do
+      m $ oneStm (Let (Pattern [] (pes ++ pes')) aux (DoLoop [] (valPats ++ (zip valParams' vals')) (ForLoop v it bound []) body'))
+
+      
+onStm stm@(Let (Pattern [] pes) aux (DoLoop [] valPats (ForLoop i it bound loop_vars) body)) m = do
+  let (valParams, vals) = unzip valPats
+  vals' <- mapM subExpGrad vals
+  withGradParams valParams $ \valParams' ->
+    withGradParams (map fst loop_vars) $ \loopParams' -> do
+      let f p n = do n' <- gradVName n; return (p, n')
+      loop_vars' <- zipWithM f loopParams' (map snd loop_vars)
+      body' <- onBody body
+      withGrads pes $ \pes' -> do
+        m $ oneStm (Let (Pattern [] (pes ++ pes')) aux (DoLoop [] (valPats ++ (zip valParams' vals')) (ForLoop i it bound (loop_vars ++ loop_vars')) body'))
 
 onStm stm _ =
   error $ "unhandled AD for Stm: " ++ pretty stm ++ "\n" ++ show stm
