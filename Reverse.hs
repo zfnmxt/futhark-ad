@@ -160,7 +160,7 @@ lookupAdjoint v = do
     Just adjoint -> return adjoint
     Nothing -> do
       vbar <- adjointVName v
-      let adjoint = (return (mkFloat Float64 0), vbar)
+      let adjoint = (return (mkFloat Float32 0), vbar)
       modify $ \env -> env { envAdjoints = M.insert v adjoint (envAdjoints env) }
       return adjoint
     
@@ -199,7 +199,9 @@ adjointStms stms
   | otherwise = return mempty
 
 firstPass :: Body -> ADM ()
-firstPass (Body _ stms res) = adjointStms stms
+firstPass (Body _ stms res) = do
+  adjointStms stms
+  -- fix
 
 secondPass :: Stms SOACS -> ADM (Stms SOACS)
 secondPass stms =
@@ -220,7 +222,7 @@ adjointToStms v = do
   let mSe' = do
        se <- mSe 
        e <- lift $ eSubExp se
-       lift $ letBindNames_ [v] e
+       lift $ letBindNames_ [vbar] e
   runADBind (BEnv Int32 Float32 OverflowWrap) mSe' -- TODO: fix
 
 onBody :: Body -> ADM Body
@@ -238,13 +240,13 @@ onFun consts fundef = do
     body' <- onBody $ funDefBody fundef
     return fundef { funDefParams = funDefParams fundef
                   , funDefBody = body'
-                  , funDefRetType = funDefRetType fundef -- ++ funDefRetType fundef
+                  , funDefRetType = funDefRetType fundef
                   , funDefEntryPoint = (\(a, r) -> (a ++ a, r ++ r)) <$> (funDefEntryPoint fundef)
                   }
       
 adPass :: Pass SOACS SOACS
 adPass =
-  Pass { passName = "reverse automatic differenation"
+  Pass { passName = "reverse automatic differentiation"
        , passDescription = "apply reverse automatic differentiation to all functions"
        , passFunction = intraproceduralTransformationWithConsts pure onFun
        }

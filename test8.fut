@@ -1,1 +1,1 @@
-let main (x: i32) (y : i32) =  x * (x + y)
+let main (x: f32) (y : f32) =  x * (x + y)
