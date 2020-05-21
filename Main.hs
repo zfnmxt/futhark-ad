@@ -405,6 +405,7 @@ onStm stm@(Let (Pattern [] [pe]) aux cOp@(BasicOp CmpOp{})) m =
       oneStm stm <>
       oneStm (Let (Pattern [] [pe']) aux cOp)
 
+-- TODO: Fix
 onStm stm@(Let (Pattern [] [pe]) aux (If cond t f attr)) m = do
   t' <- onBody t
   f' <- onBody f
@@ -428,7 +429,6 @@ onStm stm@(Let (Pattern [] pes) aux (DoLoop [] valPats (ForLoop v it bound []) b
     body' <- onBody body
     withGrads pes $ \pes' -> do
       m $ oneStm (Let (Pattern [] (pes ++ pes')) aux (DoLoop [] (valPats ++ (zip valParams' vals')) (ForLoop v it bound []) body'))
-
       
 onStm stm@(Let (Pattern [] pes) aux (DoLoop [] valPats (ForLoop i it bound loop_vars) body)) m = do
   let (valParams, vals) = unzip valPats
