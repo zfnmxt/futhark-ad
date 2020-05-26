@@ -10,11 +10,11 @@ import           Control.Monad
 import           Control.Monad.Reader
 import           Control.Monad.State
 import           Data.Functor.Identity
-import           Data.List                                 (sortOn)
+import           Data.List                                 (sortOn, isPrefixOf)
 import           Data.Loc
 import qualified Data.Map                                  as M
 import           Data.Maybe
-import           Data.Sequence                             (Seq(..))
+import           Data.Sequence                             (Seq(..), fromList)
 import qualified Data.Text                                 as T
 import qualified Data.Text.IO                              as T
 import           Debug.Trace
@@ -160,7 +160,9 @@ lookupAdjoint v = do
     Just adjoint -> return adjoint
     Nothing -> do
       vbar <- adjointVName v
-      let adjoint = (return (mkFloat Float32 0), vbar)
+      let adjoint = if ("res" `isPrefixOf` baseString v)
+                      then (return (mkFloat Float32 1), vbar) -- awful hack, fix
+                      else (return (mkFloat Float32 0), vbar)
       modify $ \env -> env { envAdjoints = M.insert v adjoint (envAdjoints env) }
       return adjoint
     
@@ -183,9 +185,28 @@ adjointStm (Let (Pattern [] [pe@(PatElem p t)]) aux (BasicOp (BinOp (FAdd ft) x 
   subExpAdjoint p x (mkFloat ft 1)
   subExpAdjoint p y (mkFloat ft 1)
   
+adjointStm (Let (Pattern [] [pe@(PatElem p t)]) aux (BasicOp (BinOp (Add _ _) x y))) = do
+  subExpAdjoint p x (mkFloat Float32 1)
+  subExpAdjoint p y (mkFloat Float32 1)
+  
 adjointStm (Let (Pattern [] [pe@(PatElem p t)]) aux (BasicOp (BinOp (FMul ft) x y))) = do
   subExpAdjoint p x y
   subExpAdjoint p y x
+  
+adjointStm (Let (Pattern [] [pe@(PatElem p t)]) aux (BasicOp (BinOp (Mul _ _) x y))) = do
+  subExpAdjoint p x y
+  subExpAdjoint p y x
+
+adjointStm (Let (Pattern [] [pe]) aux cOp@(BasicOp CmpOp{})) = return ()
+
+adjointStm (Let (Pattern [] pes) aux (DoLoop [] valPats (WhileLoop v) body)) = do
+  firstPass body
+  --let (valParams, vals) = unzip valPats
+  --vals' <- mapM subExpGrad vals
+  --withGradParams valParams $ \valParams' -> do
+  --  body' <- onBody body
+  --  withGrads pes $ \pes' -> do
+  --    m $ oneStm (Let (Pattern [] (pes ++ pes')) aux (DoLoop [] (valPats ++ (zip valParams' vals')) (WhileLoop v) body'))
 
 adjointStm stm =
   error $ "unhandled AD for Stm: " ++ pretty stm ++ "\n" ++ show stm
@@ -201,17 +222,19 @@ adjointStms stms
 firstPass :: Body -> ADM ()
 firstPass (Body _ stms res) = do
   adjointStms stms
-  -- fix
 
 secondPass :: Stms SOACS -> ADM (Stms SOACS)
-secondPass stms =
-  case stms of
-    (stms' :|> stm) -> do
-      let (Pattern [] [PatElem p t]) = stmPattern stm
-      aStms  <- adjointToStms p
+secondPass Empty = return mempty
+secondPass (stms' :|> stm) =
+  --case stm of
+  --  (Let (Pattern [] pes) aux (DoLoop [] valPats (WhileLoop v) body)) ->
+  --    
+  --  _ -> do
+           do
+      let (Pattern [] pats) = stmPattern stm
+      aStms  <- foldM (\s p -> (s <>) <$> adjointToStms (patElemName p)) mempty pats
       aStms' <- secondPass stms'
       return $ aStms <> aStms'
-    Empty -> return mempty
 
 adjointVName :: VName -> ADM VName
 adjointVName v = newVName (baseString v <> "_adjoint")
@@ -225,11 +248,13 @@ adjointToStms v = do
        lift $ letBindNames_ [vbar] e
   runADBind (BEnv Int32 Float32 OverflowWrap) mSe' -- TODO: fix
 
-onBody :: Body -> ADM Body
+onBody ::  Body -> ADM Body 
 onBody body@(Body _ stms res) = do
   firstPass body
   adjointStms <- secondPass stms
   return $ mkBody (stms <> adjointStms) res
+
+
   
 onFun :: Stms SOACS -> FunDef SOACS -> PassM (FunDef SOACS)
 onFun consts fundef = do
@@ -237,11 +262,16 @@ onFun consts fundef = do
   -- don't worry about them, and assume they all have zero gradient.
   let initial_env = Env { envAdjoints = mempty, vns = mempty }
   flip runADM mempty $ inScopeOf consts $ do
-    body' <- onBody $ funDefBody fundef
-    return fundef { funDefParams = funDefParams fundef
-                  , funDefBody = body'
-                  , funDefRetType = funDefRetType fundef
-                  , funDefEntryPoint = (\(a, r) -> (a ++ a, r ++ r)) <$> (funDefEntryPoint fundef)
+    let params = funDefParams fundef
+    (Body attr stms res) <- onBody $ funDefBody fundef
+    adjointParams <- foldM (\s p -> (s <>) <$> (adjointToStms (paramName p))) mempty params
+    m <- gets envAdjoints
+    let res' = res ++ map (Var . snd . (m M.!) . paramName) params
+    -- let rts = funDefRetType fundef ++ map paramAttr params
+    return fundef { funDefParams = funDefParams fundef -- ++ resVNames
+                  , funDefBody = Body attr (stms <> adjointParams) res'
+                  , funDefRetType = concatMap (replicate (length params + 1)) $ funDefRetType fundef -- ridiculous, fix
+                  , funDefEntryPoint = (\(a, r) -> (a, concat (replicate (length params + 1) r))) <$> (funDefEntryPoint fundef)
                   }
       
 adPass :: Pass SOACS SOACS
