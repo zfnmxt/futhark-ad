@@ -39,10 +39,10 @@ import           Futhark.Pass.FirstOrderTransform
 import           Futhark.Pass.Simplify
 import           Futhark.Passes                            (standardPipeline)
 import           Futhark.Pipeline
-import           Futhark.Representation.Primitive
-import           Futhark.Representation.Seq                (Seq)
-import           Futhark.Representation.SeqMem             (SeqMem)
-import           Futhark.Representation.SOACS
+import           Futhark.IR.Primitive
+import           Futhark.IR.Seq                (Seq)
+import           Futhark.IR.SeqMem             (SeqMem)
+import           Futhark.IR.SOACS
 import           Futhark.Util
 import           Futhark.Util.Options
 import           Futhark.Util.Pretty                       (pretty)
@@ -152,7 +152,7 @@ mkFloat ft = Constant . FloatValue . floatValue ft
 bindGrads :: PatElem -> SubExp -> ADBind ()
 bindGrads pe' se = do
   e <- lift $ eSubExp se
-  lift $ letBindNames_ [patElemName pe'] e
+  lift $ letBindNames [patElemName pe'] e
 
 runADBind :: BEnv -> ADBind a -> ADM (Stms SOACS)
 runADBind env m = (runBinder_ . (flip runReaderT) env) m
