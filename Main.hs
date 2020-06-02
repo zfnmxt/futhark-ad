@@ -38,6 +38,26 @@ import           Futhark.Util.Pretty                       (pretty)
 
 import Differentiate
 
+
+sequentialADPipeline :: Pass SOACS SOACS -> Pipeline SOACS RSeq.Seq
+sequentialADPipeline p =
+  standardPipeline >>>
+  onePass p >>>
+  onePass firstOrderTransform >>>
+  passes [ simplifySeq
+         , inPlaceLoweringSeq
+         ]
+
+sequentialCpuADPipeline :: Pass SOACS SOACS -> Pipeline SOACS SeqMem
+sequentialCpuADPipeline p =
+  sequentialADPipeline p >>>
+  onePass Seq.explicitAllocations >>>
+  passes [ performCSE False
+         , simplifySeqMem
+         , simplifySeqMem
+         ]
+
+
 type Command = String -> [String] -> IO ()
 
 grad :: Pass SOACS SOACS -> Command
@@ -52,13 +72,14 @@ commands :: [(String, (Command, String))]
 commands = sortOn fst
            [ ("fwd", (grad fwdPass, ""))
            , ("rev", (grad revPass, ""))
-           , ("python", (mkPython, ""))
+           , ("fwd-python", (mkPython fwdPass, ""))
+           , ("rev-python", (mkPython revPass, ""))
            ]
 
-mkPython :: String -> [String] -> IO ()
-mkPython = compilerMain () []
+mkPython :: Pass SOACS SOACS -> String -> [String] -> IO ()
+mkPython p = compilerMain () []
        "Compile sequential Python" "Generate sequential Python code from optimised Futhark program."
-       sequentialCpuADPipeline $ \() mode outpath prog -> do
+       (sequentialCpuADPipeline p) $ \() mode outpath prog -> do
           let class_name =
                 case mode of ToLibrary    -> Just $ takeBaseName outpath
                              ToExecutable -> Nothing
@@ -71,24 +92,6 @@ mkPython = compilerMain () []
               writeFile outpath pyprog
               perms <- liftIO $ getPermissions outpath
               setPermissions outpath $ setOwnerExecutable True perms
-
-sequentialADPipeline :: Pipeline SOACS RSeq.Seq
-sequentialADPipeline =
-  standardPipeline >>>
-  onePass fwdPass >>>
-  onePass firstOrderTransform >>>
-  passes [ simplifySeq
-         , inPlaceLoweringSeq
-         ]
-
-sequentialCpuADPipeline :: Pipeline SOACS SeqMem
-sequentialCpuADPipeline =
-  sequentialADPipeline >>>
-  onePass Seq.explicitAllocations >>>
-  passes [ performCSE False
-         , simplifySeqMem
-         , simplifySeqMem
-         ]
 
 msg :: String
 msg = unlines $
