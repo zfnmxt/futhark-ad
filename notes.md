@@ -16,8 +16,8 @@ Consider:
     x_6 = x_5 + x_4
 
 We traverse the statements top-to-bottom. For each statement of the
-form x_l = f(x_{r, 0}, x_{r_1}, ..., x_{r,n}) we insert n adjoint
-variables bar(x_{r,i}) into a map associating normal variables with
+form `x_l = f(x_{r, 0}, x_{r_1}, ..., x_{r,n})` we insert n adjoint
+variables `bar(x_{r,i})` into a map associating normal variables with
 their adjoints:
 
     bar(x_{r,i}) += dx_6/d(x_{r,i}) = bar(x_l) dx_l/d(x_{r,i})
@@ -26,7 +26,7 @@ This is easy to do for statements like `x_3 = x_1 * x_2` since
 
     bar(x_1) = bar(x_3) dx_3/dx_1 = bar(x_3) x_2
 
-But it's not straight-forward how to compute bar(x_4) since the
+But it's not straight-forward how to compute `bar(x_4)` since the
 derivative `dx_5/dx_4` is not readily available.
 
 However, forward-mode gives us exactly the derivative (`dx_5/dx_4`)
