@@ -108,5 +108,20 @@ the above to
 	
 ### Peng-Robinson equation (Fig 5., Automatic Differentiation in Machine Learning: a Survey (Baydin))
 
-![f(x) = \sum_{i=0}^n \log \frac{x_i}{1 - \mathbf{b}^T \mathbf{x}} - \frac{\mathbf{x}^T \mathbf{A} \mathbf{x}}{\mathbf{b}^T \mathbf{x}} \log \frac{1  + \mathbf{b}^T \mathbf{x}}{1 - \mathbf{b}^T \mathbf{x}}](https://render.githubusercontent.com/render/math?math=f(x)%20%3D%20%5Csum_%7Bi%3D0%7D%5En%20%5Clog%20%5Cfrac%7Bx_i%7D%7B1%20-%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D%20-%20%5Cfrac%7B%5Cmathbf%7Bx%7D%5ET%20%5Cmathbf%7BA%7D%20%5Cmathbf%7Bx%7D%7D%7B%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D%20%5Clog%20%5Cfrac%7B1%20%20%2B%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D%7B1%20-%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D)
+We wish to differentiate
 
+![f(x) = \sum_{j=0}^n \log \frac{x_j}{1 - \mathbf{b}^T \mathbf{x}} - \frac{\mathbf{x}^T \mathbf{A} \mathbf{x}}{\mathbf{b}^T \mathbf{x}} \log \frac{1  + \mathbf{b}^T \mathbf{x}}{1 - \mathbf{b}^T \mathbf{x}}](https://render.githubusercontent.com/render/math?math=f(x)%20%3D%20%5Csum_%7Bj%3D0%7D%5En%20%5Clog%20%5Cfrac%7Bx_j%7D%7B1%20-%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D%20-%20%5Cfrac%7B%5Cmathbf%7Bx%7D%5ET%20%5Cmathbf%7BA%7D%20%5Cmathbf%7Bx%7D%7D%7B%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D%20%5Clog%20%5Cfrac%7B1%20%20%2B%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D%7B1%20-%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D)
+
+Taking the derivative of the sum, we obtain
+
+![\left( \sum_{j=0}^n \log \frac{x_j}{1 - \mathbf{b}^T \mathbf{x}} \right)' = \sum_{j=0}^n \frac{1 - \mathbf{b}^T \mathbf{x}}{x_j} \left( \frac{x_j' \cdot  (1 - \mathbf{b}^T \mathbf{x}) - x_j \cdot (1-\mathbf{b}^T \mathbf{x})'}{(1 - \mathbf{b}^T \mathbf{x})^2}\right)'](https://render.githubusercontent.com/render/math?math=%5Cleft(%20%5Csum_%7Bj%3D0%7D%5En%20%5Clog%20%5Cfrac%7Bx_j%7D%7B1%20-%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D%20%5Cright)'%20%3D%20%5Csum_%7Bj%3D0%7D%5En%20%5Cfrac%7B1%20-%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D%7Bx_j%7D%20%5Cleft(%20%5Cfrac%7Bx_j'%20%5Ccdot%20%20(1%20-%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D)%20-%20x_j%20%5Ccdot%20(1-%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D)'%7D%7B(1%20-%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D)%5E2%7D%5Cright)')
+
+which can be thought of as a map over `zip x x'` which computes the summand for each `j`, followed by a reduce to compute the actual sum.
+
+If we encorporate what we know about `x'`--namely that it's one-hot with `x_i' = 1`, we have
+
+![x_j' \cdot  (1 - \mathbf{b}^T \mathbf{x}) - x_j \cdot (1-\mathbf{b}^T \mathbf{x})' = x_j' \cdot (1 - \mathbf{b}^T \mathbf{x}) + x_j b_i x_i'](https://render.githubusercontent.com/render/math?math=x_j'%20%5Ccdot%20%20(1%20-%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D)%20-%20x_j%20%5Ccdot%20(1-%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D)'%20%3D%20x_j'%20%5Ccdot%20(1%20-%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D)%20%2B%20x_j%20b_i%20x_i')
+
+for the numerator. Ignoring the constant factors, we have something of the form
+
+![\sum_{j=0}^n \frac{x_j' + x_jb_ix_i'}{x_j}](https://render.githubusercontent.com/render/math?math=%5Csum_%7Bj%3D0%7D%5En%20%5Cfrac%7Bx_j'%20%2B%20x_jb_ix_i'%7D%7Bx_j%7D)
