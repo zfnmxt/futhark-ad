@@ -105,6 +105,22 @@ However, if the compiler is aware that `x'` is one-hot (with `x_i' = 1`), we can
 the above to
  
     (b^T x) = b_i x_i'
+
+### Reductions
+
+#### (*) operator
+
+Derivatives of reductions using the `(*)` operator can be straightfowardly derived via `(*')` where
+
+    x *' y = x' * y + x * y'
+	
+Reduce operators in Futhark must a) be associative and b) have a neutral element. Associativity:
+
+    (x *' y) *' z = (x' * y + x * y') *' z 
+	              = (x' * y + x * y')' * z + (x' * y + x * y') * z'
+				  = (x' *' y) * z + (x *' y') * z + (x' * y) * z' + (x * y') * z'
+				  
+	x *' (y *' z) = 
 	
 ## Peng-Robinson equation (Fig 5., Automatic Differentiation in Machine Learning: a Survey (Baydin))
 
