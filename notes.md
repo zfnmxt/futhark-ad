@@ -26,7 +26,7 @@ This is easy to do for statements like `x_3 = x_1 * x_2` since
 
     bar(x_1) = bar(x_3) dx_3/dx_1 = bar(x_3) x_2
 
-But it's not straight-forward how to compute `bar(x_4)` since the
+But it's not straightforward how to compute `bar(x_4)` since the
 derivative `dx_5/dx_4` is not readily available.
 
 However, forward-mode gives us exactly the derivative (`dx_5/dx_4`)
