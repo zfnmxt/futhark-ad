@@ -20,11 +20,11 @@ form x_l = f(x_{r, 0}, x_{r_1}, ..., x_{r,n}) we insert n adjoint
 variables bar(x_{r,i}) into a map associating normal variables with
 their adjoints:
 
-   bar(x_{r,i}) += dx_6/d(x_{r,i}) = bar(x_l) dx_l/d(x_{r,i})
+    bar(x_{r,i}) += dx_6/d(x_{r,i}) = bar(x_l) dx_l/d(x_{r,i})
 
 This is easy to do for statements like `x_3 = x_1 * x_2` since
 
-   bar(x_1) = bar(x_3) dx_3/dx_1 = bar(x_3) x_2
+    bar(x_1) = bar(x_3) dx_3/dx_1 = bar(x_3) x_2
 
 But it's not straight-forward how to compute bar(x_4) since the
 derivative `dx_5/dx_4` is not readily available.
@@ -129,7 +129,7 @@ for the numerator. Ignoring the constant factors, we have something of the form
 
 For the second part of the equation
 
-![ \frac{\mathbf{x}^T \mathbf{A} \mathbf{x}}{\mathbf{b}^T \mathbf{x}} \log \frac{1  + \mathbf{b}^T \mathbf{x}}{1 - \mathbf{b}^T \mathbf{x}}](https://render.githubusercontent.com/render/math?math=%20%5Cfrac%7B%5Cmathbf%7Bx%7D%5ET%20%5Cmathbf%7BA%7D%20%5Cmathbf%7Bx%7D%7D%7B%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D%20%5Clog%20%5Cfrac%7B1%20%20%2B%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D%7B1%20-%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D)
+![\frac{\mathbf{x}^T \mathbf{A} \mathbf{x}}{\mathbf{b}^T \mathbf{x}} \log \frac{1  + \mathbf{b}^T \mathbf{x}}{1 - \mathbf{b}^T \mathbf{x}}](https://render.githubusercontent.com/render/math?math=%20%5Cfrac%7B%5Cmathbf%7Bx%7D%5ET%20%5Cmathbf%7BA%7D%20%5Cmathbf%7Bx%7D%7D%7B%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D%20%5Clog%20%5Cfrac%7B1%20%20%2B%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D%7B1%20-%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D)
 
 let's look at computing `x^T A x`.
 
