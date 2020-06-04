@@ -86,19 +86,19 @@ When we take forward-mode derivatives of functions `f: R^n -> R^m`, we
 must specify the direction in which we're taking the derivative by
 choosing an appropriate vector of gradient variables, i.e. the vector
 
-    (x_1', x_2', ..., x_n')
+    (x_0', x_2', ..., x_{n-1}')
 
 where each component, in essence, represents the weighting of change
 in its respective component that we're interested in. This often
 reduces to a one-hot vector where we're only interested in the
 derivative with respect to a single component
 
-    (x_1' = 0, x_2' = 0, ..., x_i' = 1, .., x_n' = 0)
+    (x_0' = 0, x_2' = 0, ..., x_i' = 1, .., x_{n-1}' = 0)
 
 If we naively apply forward mode to the inner product `b^T x`, we obtain
 
-    (b^T x)' = (b_1 x_1 + ... + b_n x_n)'
-	         = b_1 x_1' + ... + b_n x_n'
+    (b^T x)' = (b_0 x_0 + ... + b_{n-1} x_{n-1})'
+	         = b_0 x_0' + ... + b_{n-1} x_{n-1}'
 			 = reduce (+) 0 (zipWith (*) b x')
 		 
 However, if the compiler is aware that `x'` is one-hot (with `x_i' = 1`), we can immediately simplify
@@ -106,7 +106,7 @@ the above to
  
     (b^T x) = b_i x_i'
 	
-### Peng-Robinson equation (Fig 5., Automatic Differentiation in Machine Learning: a Survey (Baydin))
+## Peng-Robinson equation (Fig 5., Automatic Differentiation in Machine Learning: a Survey (Baydin))
 
 We wish to differentiate
 
@@ -118,10 +118,62 @@ Taking the derivative of the sum, we obtain
 
 which can be thought of as a map over `zip x x'` which computes the summand for each `j`, followed by a reduce to compute the actual sum.
 
-If we encorporate what we know about `x'`--namely that it's one-hot with `x_i' = 1`, we have
+If we encorporate what we know about `x'`--namely that it's one-hot with `x_i' = 1`--we have
 
 ![x_j' \cdot  (1 - \mathbf{b}^T \mathbf{x}) - x_j \cdot (1-\mathbf{b}^T \mathbf{x})' = x_j' \cdot (1 - \mathbf{b}^T \mathbf{x}) + x_j b_i x_i'](https://render.githubusercontent.com/render/math?math=x_j'%20%5Ccdot%20%20(1%20-%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D)%20-%20x_j%20%5Ccdot%20(1-%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D)'%20%3D%20x_j'%20%5Ccdot%20(1%20-%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D)%20%2B%20x_j%20b_i%20x_i')
 
 for the numerator. Ignoring the constant factors, we have something of the form
 
 ![\sum_{j=0}^n \frac{x_j' + x_jb_ix_i'}{x_j}](https://render.githubusercontent.com/render/math?math=%5Csum_%7Bj%3D0%7D%5En%20%5Cfrac%7Bx_j'%20%2B%20x_jb_ix_i'%7D%7Bx_j%7D)
+
+
+For the second part of the equation
+
+![ \frac{\mathbf{x}^T \mathbf{A} \mathbf{x}}{\mathbf{b}^T \mathbf{x}} \log \frac{1  + \mathbf{b}^T \mathbf{x}}{1 - \mathbf{b}^T \mathbf{x}}](https://render.githubusercontent.com/render/math?math=%20%5Cfrac%7B%5Cmathbf%7Bx%7D%5ET%20%5Cmathbf%7BA%7D%20%5Cmathbf%7Bx%7D%7D%7B%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D%20%5Clog%20%5Cfrac%7B1%20%20%2B%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D%7B1%20-%20%5Cmathbf%7Bb%7D%5ET%20%5Cmathbf%7Bx%7D%7D)
+
+let's look at computing `x^T A x`.
+
+    x^T A = map (sum . zipWith (*) x) A
+	
+	x^T A x = sum . zipWith (*) (x^T A) x = sum . zipWith (*) (map (sum . zipWith (*) x) A) x
+	
+To illustrate, let's look at the case where `A` is a `2x2` matrix:
+
+    A = [[a_00, a_01], [a_10, a_11]]
+	
+Then
+
+    x^T A = map (sum . zipWith (*) x) A 
+	      = [(sum . zipWith (*) x) [a_00, a_01], (sum.  zipWith (*) x) [a_10, a_11]]
+		  = [ x_0 * a_00 + x_1 * a_01, x_0 * a_10 + x_1 * a_11]
+		  
+    x^T A x = sum . zipWith (*) (x^T A) x 
+	      = x_0 * (x_0 * a_00 + x_1 * a_01) +  x_1 * (x_0 * a_10 + x_1 * a_11)
+		  
+For the derivatives,
+
+    (x^T A)' = map (sum . zipWith (*') x) A 
+	         = [(sum . zipWith (*') x) [a_00, a_01], (sum.  zipWith (*') x) [a_10, a_11]]
+		     = [ x_0 *' a_00 + x_1 *' a_01, x_0 *' a_10 + x_1 *' a_11]
+		     = [ x_0' * a_00 + x_1' * a_01, x_0' * a_10 + x_1' * a_11]
+			 
+    (x^T A x) = sum . zipWith (*') (x^T A) x
+	          = (x_0 *' (x_0 * a_00 + x_1 * a_01) +  x_1 *' (x_0 * a_10 + x_1 * a_11))
+	          = (x_0' * (x_0 * a_00 + x_1 * a_01) + x_0 * (x_0 * a_00 + x_1 * a_01)' +  x_1' * (x_0 * a_10 + x_1 * a_11) + x_1 * (x_0 * a_10 + x_1 * a_11)')
+	          = (x_0' * (x_0 * a_00 + x_1 * a_01) + x_0 * (x_0 *' a_00 + x_1 *' a_01) +  x_1' * (x_0 * a_10 + x_1 * a_11) + x_1 * (x_0 *' a_10 + x_1 *' a_11))
+			  
+where
+
+    x *' y = x' * y + x * y'
+
+If x' is one-hot (say `x_0' = 1`), then
+
+    (x^T A)' = [a_00, a_10]
+	
+    (x^T A x)' = sum . zipWith (*') (x^T A) x
+	           = x_0' * (x_0 * a_00 + x_1 * a_01) + x_0 * (x_0 *' a_00 + x_1 *' a_01) +  x_1' * (x_0 * a_10 + x_1 * a_11) + x_1 * (x_0 *' a_10 + x_1 *' a_11)
+	           = (x_0 * a_00 + x_1 * a_01) + x_0 * (x_0 *' a_00 + x_1 *' a_01) + x_1 * (x_0 *' a_10 + x_1 *' a_11)
+	           = (x_0 * a_00 + x_1 * a_01) + x_0 * a_00  + x_1 * a_10 
+
+## Taking derivatives of SOACS/compositions of SOACS
+

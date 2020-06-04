@@ -189,10 +189,12 @@ subExpGrad (Constant v) =
   zeroGrad $ Prim $ primValueType v
 subExpGrad (Var v) = do
   t <- lookupType v
+  maybe_adjoint <- gets $ M.lookup v . envAdjoints
   maybe_grad <- asks $ M.lookup v . envGrads
-  case maybe_grad of
-    Nothing   -> zeroGrad t
-    Just grad -> return $ Var grad
+  case (maybe_adjoint, maybe_grad) of
+    (Just (_, grad), _) -> return $ Var grad
+    (_, Just grad) -> return $ Var grad
+    _   -> zeroGrad t
 
 gradParam :: Param attr -> ADM (Param attr)
 gradParam (Param p t) = do
@@ -230,12 +232,23 @@ withGrads pes m = do
                   }
   local f $ m pes'
 
+withGradsRev :: [PatElem] -> ([PatElem] -> ADM a) -> ADM a
+withGradsRev pes m = do
+  pes' <- mapM gradPatElem pes
+  let f env = env { envGrads = M.fromList (zip (map patElemName pes) (map patElemName pes'))
+                               `M.union` envGrads env
+                  }
+  local f $ m pes'
+
 withGradParams :: [Param attr] -> ([Param attr] -> ADM a) -> ADM a
 withGradParams params m = do
   params' <- mapM gradParam params
-  let f env = env { envGrads = M.fromList (zip (map paramName params) (map paramName params'))
-                               `M.union` envGrads env
-                  }
+  let f rEnv = rEnv { envGrads = M.fromList (zip (map paramName params) (map paramName params'))
+                               `M.union` envGrads rEnv
+                     }
+  modify $ \env -> env { envAdjoints =  M.fromList (zip (map paramName params) (map (\p' -> (return (Var (paramName p')), paramName p')) params'))
+                                       `M.union` envAdjoints env
+                       }
   local f $ m params'
   
 lookupAdjoint :: VName -> ADM (Adjoint)
@@ -245,9 +258,12 @@ lookupAdjoint v = do
     Just adjoint -> return adjoint
     Nothing -> do
       vbar <- adjointVName v
+      t <- lookupType v
       let adjoint = if ("res" `isPrefixOf` baseString v)
                       then (return (mkFloat Float32 1), vbar) -- awful hack, fix
-                      else (return (mkFloat Float32 0), vbar)
+                      else case t of
+                        (Prim t') -> (return (constant (blankPrimValue t')), vbar)
+                        _ -> error ""
       modify $ \env -> env { envAdjoints = M.insert v adjoint (envAdjoints env) }
       return adjoint
     
@@ -448,7 +464,6 @@ dStm stm@(Let (Pattern [] [pe]) aux cOp@(BasicOp CmpOp{})) m =
       oneStm stm <>
       oneStm (Let (Pattern [] [pe']) aux cOp)
 
--- TODO: Fix
 dStm stm@(Let (Pattern [] [pe]) aux (If cond t f attr)) m = do
   t' <- dBody t
   f' <- dBody f
@@ -506,8 +521,7 @@ adjointStm (Let (Pattern [] [pe@(PatElem p t)]) aux (BasicOp (BinOp (Mul _ _) x 
 
 adjointStm (Let (Pattern [] [pe]) aux cOp@(BasicOp CmpOp{})) = return ()
 
-adjointStm (Let (Pattern [] pes) aux (DoLoop [] valPats (WhileLoop v) body)) = do
-  firstPass body
+adjointStm (Let (Pattern [] pes) aux (DoLoop{})) = return ()
 
 adjointStm stm =
   error $ "unhandled AD for Stm: " ++ pretty stm ++ "\n" ++ show stm
@@ -528,18 +542,6 @@ adjointStms stms
       return ()
   | otherwise = return mempty
   
-firstPass :: Body -> ADM ()
-firstPass (Body _ stms res) = do
-  adjointStms stms
-
-secondPass :: Stms SOACS -> ADM (Stms SOACS)
-secondPass Empty = return mempty
-secondPass (stms' :|> stm) = do
-      let (Pattern [] pats) = stmPattern stm
-      aStms  <- foldM (\s p -> (s <>) <$> adjointToStms (patElemName p)) mempty pats
-      aStms' <- secondPass stms'
-      return $ aStms <> aStms'
-
 adjointVName :: VName -> ADM VName
 adjointVName v = newVName (baseString v <> "_adjoint")
  
@@ -551,6 +553,69 @@ adjointToStms v = do
        e <- lift $ eSubExp se
        lift $ letBindNames [vbar] e
   runADBind (BEnv Int32 Float32 OverflowWrap) mSe' -- TODO: fix
+  
+firstPass :: Body -> ADM ()
+firstPass (Body _ stms res) = do
+  adjointStms stms
+
+secondPass :: Stms SOACS -> ADM (Stms SOACS)
+secondPass Empty = return mempty
+--secondPass (stms' :|> stm) =
+secondPass (stm :<| stms') = do
+  aStms <- case stm of
+          (Let (Pattern [] pes) aux (DoLoop [] valPats (WhileLoop v) body)) ->
+            dStm stm $ \stm' -> do
+             let [vn] = [ vn | (_, Var vn) <- tail valPats] --TODO: fix
+             --t <- lookupType vn
+             --case t of
+              -- (Prim t') -> do
+             vn' <- gradVName vn
+             s <- mkLetNames [vn'] (BasicOp $ SubExp $ constant $ IntValue $ Int32Value 1) -- TODO: fix
+             f $ oneStm s <> stm'
+               --_ -> error ""
+            
+          _ -> do
+            let (Pattern [] pats) = stmPattern stm
+            foldM (\s p -> (s <>) <$> adjointToStms (patElemName p)) mempty pats
+  let (Pattern [] pats) = stmPattern stm
+  withGrads pats $ \_ -> f aStms
+  where f aStms = do
+         aStms' <- secondPass stms'
+         return $ aStms <> aStms'
+         
+--dStm stm@(Let (Pattern [] pes) aux (DoLoop [] valPats (WhileLoop v) body)) m = do
+--  let (valParams, vals) = unzip valPats
+--  vals' <- mapM subExpGrad vals
+--  withGradParams valParams $ \valParams' -> do
+--    body' <- dBody body
+--    withGrads pes $ \pes' -> do
+--      m $ oneStm (Let (Pattern [] (pes ++ pes')) aux (DoLoop [] (valPats ++ (zip valParams' vals')) (WhileLoop v) body'))
+         
+--insertAdjoint :: VName -> VName -> SubExp -> ADM ()
+--insertAdjoint p v se = do
+--  (_, pbar) <- lookupAdjoint p
+--  (mVse, vbar) <- lookupAdjoint v
+--  let mVse' = do
+--       vse <- mVse
+--       vse' <- (Var pbar) *^. se
+--       vse' +^. vse
+--     in modify $ \env -> env { envAdjoints = M.insert v (mVse', vbar) (envAdjoints env) }
+
+--withGrad :: PatElem -> (PatElem -> ADM a) -> ADM a
+--withGrad pe m = do
+--  pe' <- gradPatElem pe
+--  let f env = env { envGrads = M.insert (patElemName pe) (patElemName pe') $
+--                               envGrads env
+--                  }
+--  local f $ m pe'
+--
+--withGrads :: [PatElem] -> ([PatElem] -> ADM a) -> ADM a
+--withGrads pes m = do
+--  pes' <- mapM gradPatElem pes
+--  let f env = env { envGrads = M.fromList (zip (map patElemName pes) (map patElemName pes'))
+--                               `M.union` envGrads env
+--                  }
+--  local f $ m pes'
 
 dBody :: Body -> ADM Body
 dBody (Body _ stms res) =
@@ -562,6 +627,7 @@ revBody ::  Body -> ADM Body
 revBody body@(Body _ stms res) = do
   firstPass body
   adjointStms <- secondPass stms
+  error $ pretty $ mkBody (stms <> adjointStms) res
   return $ mkBody (stms <> adjointStms) res
 
 dFun :: Stms SOACS -> FunDef SOACS -> PassM (FunDef SOACS)
@@ -578,13 +644,14 @@ dFun consts fundef = do
                   , funDefEntryPoint = (\(a, r) -> (a ++ a, r ++ r)) <$> (funDefEntryPoint fundef)
                   }
 
-  
 revFun :: Stms SOACS -> FunDef SOACS -> PassM (FunDef SOACS)
 revFun consts fundef = do
   -- The 'consts' are top-level constants.  They are not important;
   -- don't worry about them, and assume they all have zero gradient.
+
   let initial_renv = REnv { envGrads = mempty, envScope = mempty }
-  flip runADM initial_renv $ inScopeOf consts $ do
+  flip runADM initial_renv $ inScopeOf consts $
+    withParamGrads (funDefParams fundef) $ \gradient_params -> do
     let params = funDefParams fundef
     (Body attr stms res) <- revBody $ funDefBody fundef
     adjointParams <- foldM (\s p -> (s <>) <$> (adjointToStms (paramName p))) mempty params
