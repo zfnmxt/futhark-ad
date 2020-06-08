@@ -10,7 +10,7 @@ import           Control.Monad
 import           Control.Monad.Reader
 import           Control.Monad.State
 import           Data.Functor.Identity
-import           Data.List                                 (sortOn, isPrefixOf)
+import           Data.List                                 (sortOn, isPrefixOf, isInfixOf)
 import           Data.Loc
 import qualified Data.Map                                  as M
 import           Data.Maybe
@@ -164,6 +164,11 @@ mkInt it = Constant . IntValue . intValue it
         
 mkFloat :: (Real num) => FloatType -> num -> SubExp
 mkFloat ft = Constant . FloatValue . floatValue ft
+
+mkPrimValue :: (Integral num) => num -> PrimType -> PrimValue
+mkPrimtValue num (IntType it) = IntValue $ intValue it num
+mkPrimValue num (FloatType ft) = FloatValue $ floatValue ft num
+mkPrimValue _ _ = error "oops"
 
 bindGrads :: PatElem -> SubExp -> ADBind ()
 bindGrads pe' se = do
@@ -519,12 +524,23 @@ adjointStm (Let (Pattern [] [pe@(PatElem p t)]) aux (BasicOp (BinOp (Mul _ _) x 
   subExpAdjoint p x y
   subExpAdjoint p y x
 
-adjointStm (Let (Pattern [] [pe]) aux cOp@(BasicOp CmpOp{})) = return ()
+adjointStm stm@(Let (Pattern [] [pe@(PatElem p t)]) aux cOp@(BasicOp CmpOp{})) =
+  void $ inScopeOf stm $ lookupAdjoint p 
 
-adjointStm (Let (Pattern [] pes) aux (DoLoop{})) = return ()
+adjointStm stm@(Let (Pattern [] pes) aux (DoLoop{})) = return ()
 
 adjointStm stm =
   error $ "unhandled AD for Stm: " ++ pretty stm ++ "\n" ++ show stm
+
+fwdAdjoint :: Stm -> ADM ()
+fwdAdjoint stm@(Let (Pattern [] pes) aux (DoLoop [] valPats (WhileLoop v) body)) =
+  void $ dStm stm $ \stm' -> do
+  valPats' <- mapM (gradVName . paramName . fst) valPats
+  forM valPats' $ \v ->
+    runBinder_ $ do
+      letBindNames [v] (BasicOp $ SubExp $ constant $ mkPrimValue 1 (IntType Int32)) --todo: fix
+      letBindNames (filter (/= v) valPats') (BasicOp $ SubExp $ constant $ blankPrimValue (IntType Int32))
+      addStms stm'
 
 dStms :: Stms SOACS -> ADM Body -> ADM Body
 dStms stms m
@@ -576,7 +592,7 @@ secondPass (stm :<| stms') = do
             
           _ -> do
             let (Pattern [] pats) = stmPattern stm
-            foldM (\s p -> (s <>) <$> adjointToStms (patElemName p)) mempty pats
+            (oneStm stm <>) <$> foldM (\s p -> (s <>) <$> adjointToStms (patElemName p)) mempty pats
   let (Pattern [] pats) = stmPattern stm
   withGrads pats $ \_ -> f aStms
   where f aStms = do
@@ -593,8 +609,7 @@ revBody ::  Body -> ADM Body
 revBody body@(Body _ stms res) = do
   firstPass body
   adjointStms <- secondPass stms
-  error $ pretty $ mkBody (stms <> adjointStms) res
-  return $ mkBody (stms <> adjointStms) res
+  return $ mkBody adjointStms res
 
 dFun :: Stms SOACS -> FunDef SOACS -> PassM (FunDef SOACS)
 dFun consts fundef = do
@@ -616,7 +631,7 @@ revFun consts fundef = do
   -- don't worry about them, and assume they all have zero gradient.
 
   let initial_renv = REnv { envGrads = mempty, envScope = mempty }
-  flip runADM initial_renv $ inScopeOf consts $
+  flip runADM initial_renv $ inScopeOf consts $ inScopeOf fundef $
     withParamGrads (funDefParams fundef) $ \gradient_params -> do
     let params = funDefParams fundef
     (Body attr stms res) <- revBody $ funDefBody fundef
@@ -624,7 +639,7 @@ revFun consts fundef = do
     m <- gets envAdjoints
     let res' = res ++ map (Var . snd . (m M.!) . paramName) params
     -- let rts = funDefRetType fundef ++ map paramAttr params
-    return fundef { funDefParams = funDefParams fundef -- ++ resVNames
+    return $ fundef { funDefParams = funDefParams fundef -- ++ resVNames
                   , funDefBody = Body attr (stms <> adjointParams) res'
                   , funDefRetType = concatMap (replicate (length params + 1)) $ funDefRetType fundef -- ridiculous, fix
                   , funDefEntryPoint = (\(a, r) -> (a, concat (replicate (length params + 1) r))) <$> (funDefEntryPoint fundef)
