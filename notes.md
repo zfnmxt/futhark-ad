@@ -118,9 +118,10 @@ Reduce operators in Futhark must a) be associative and b) have a neutral element
 
     (x *' y) *' z = (x' * y + x * y') *' z 
 	              = (x' * y + x * y')' * z + (x' * y + x * y') * z'
-				  = (x' *' y) * z + (x *' y') * z + (x' * y) * z' + (x * y') * z'
+                  = (x' *' y) * z + (x *' y') * z + (x' * y) * z' + (x * y') * z'
 				  
-	x *' (y *' z) = 
+	x *' (y *' z) = x *' (y' * z + z * y')
+	              = x' * (y' * z + z * y') + x * (y' * z + z * y')'
 	
 ## Peng-Robinson equation (Fig 5., Automatic Differentiation in Machine Learning: a Survey (Baydin))
 

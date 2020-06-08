@@ -583,40 +583,6 @@ secondPass (stm :<| stms') = do
          aStms' <- secondPass stms'
          return $ aStms <> aStms'
          
---dStm stm@(Let (Pattern [] pes) aux (DoLoop [] valPats (WhileLoop v) body)) m = do
---  let (valParams, vals) = unzip valPats
---  vals' <- mapM subExpGrad vals
---  withGradParams valParams $ \valParams' -> do
---    body' <- dBody body
---    withGrads pes $ \pes' -> do
---      m $ oneStm (Let (Pattern [] (pes ++ pes')) aux (DoLoop [] (valPats ++ (zip valParams' vals')) (WhileLoop v) body'))
-         
---insertAdjoint :: VName -> VName -> SubExp -> ADM ()
---insertAdjoint p v se = do
---  (_, pbar) <- lookupAdjoint p
---  (mVse, vbar) <- lookupAdjoint v
---  let mVse' = do
---       vse <- mVse
---       vse' <- (Var pbar) *^. se
---       vse' +^. vse
---     in modify $ \env -> env { envAdjoints = M.insert v (mVse', vbar) (envAdjoints env) }
-
---withGrad :: PatElem -> (PatElem -> ADM a) -> ADM a
---withGrad pe m = do
---  pe' <- gradPatElem pe
---  let f env = env { envGrads = M.insert (patElemName pe) (patElemName pe') $
---                               envGrads env
---                  }
---  local f $ m pe'
---
---withGrads :: [PatElem] -> ([PatElem] -> ADM a) -> ADM a
---withGrads pes m = do
---  pes' <- mapM gradPatElem pes
---  let f env = env { envGrads = M.fromList (zip (map patElemName pes) (map patElemName pes'))
---                               `M.union` envGrads env
---                  }
---  local f $ m pes'
-
 dBody :: Body -> ADM Body
 dBody (Body _ stms res) =
   dStms stms $ do
