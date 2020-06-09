@@ -19,8 +19,8 @@ for each `i`, with `* = 1` or `* = 2`. This can be done by direct
 application of the chain rule. For example,
 
     dx_5/dx_1 = (dx_5/dx_3) * (dx_3/dx_1) + (dx_5/dx_4) * (dx_4/dx_1)
-	          = (dx_5/dx_3) * x_3' + (dx_5/dx_4) * x_4'
-			  = x_4 * x_3' + x_3 * x_4'
+              = (dx_5/dx_3) * x_3' + (dx_5/dx_4) * x_4'
+	            = x_4 * x_3' + x_3 * x_4'
 
 This means that we can build-up the derivatives of any intermediate 
 variable by first computing the derivative of all the variables
@@ -95,8 +95,8 @@ to a given input variable* whereas the adjoint of `x_i` is the
 Again, we build the adjoints of each variable via the chain-rule, since
 
     |x_i| = dx_5/dx_i 
-	         = sum_{j, x_j is a function of x_i} (dx_5/dx_j)(dx_j/dx_i)
-	         = sum_{j, x_j is a function of x_i} |x_j|(dx_j/dx_i)
+          = sum_{j, x_j is a function of x_i} (dx_5/dx_j)(dx_j/dx_i)
+          = sum_{j, x_j is a function of x_i} |x_j|(dx_j/dx_i)
 	
 where the condition `x_j is a function x_i` just means that `x_i` appears on the
 RHS of a statement setting `x_j`. At the end, we end up with `|x_1| = dx_5/dx_1`
@@ -177,8 +177,8 @@ But how do we compute `dx_5/dx_4`? Unrolling the loop,
 we see that the computation can be represented as
 
     acc_1 = x_4
-	acc_2 = acc_1 * x_4
-	acc_3 = acc_2 * x_4
+    acc_2 = acc_1 * x_4
+    acc_3 = acc_2 * x_4
 	
 Computing the reverse-mode derivative is now trivial and we simply
 follow the method already described. The
@@ -200,7 +200,7 @@ with forward mode. In forward mode, we
 simply insert a corresponding tangent statement into the loop:
 
     (x_5, x_5') = loop (acc = x_4, acc' = x_4') for i < 2 do
-                          (acc * x_4, acc' * x_4 + acc * x_4')
+                    (acc * x_4, acc' * x_4 + acc * x_4')
 						  
 where `x_5' = dx_5/dx_4`, i.e., the tangents are derivatives with
 respect to `dx_4`.
@@ -212,9 +212,9 @@ instead of specifying it directly.
 We can now specify `|x_4|`:
 
     |x_4| = let x_4' = 1
-	            (x_5, x_5') = loop (acc = x_4, acc' = x_4') for i < 2 do
-                               (acc * x_4, acc' * x_4 + acc * x_4')
-			in  |x_6|(dx_6/dx_4) + |x_5|x_5'
+	              (x_5, x_5') = loop (acc = x_4, acc' = x_4') for i < 2 do
+                                (acc * x_4, acc' * x_4 + acc * x_4')
+                in  |x_6|(dx_6/dx_4) + |x_5|x_5'
 
 If the loop depends on multiple variables:
 
@@ -225,18 +225,18 @@ Forward mode yields an expression that is a function of multiple
 gradients:
 
     (x_5, x_5') = loop (acc = x_2 * x_4, acc' = x_2' * x_4 + x_2 * x_4') for i < 1 do
-                      (acc * (x_2 * x_4), acc' * (x_2 * x_4) + acc * (x_2' * x_4 + x_2 * x_4'))
+                    (acc * (x_2 * x_4), acc' * (x_2 * x_4) + acc * (x_2' * x_4 + x_2 * x_4'))
 					  
 And we simply choose the gradient we wish to take the derivative with respect to
 for our adjoint:
 
    
     |x_4| =  let x_2' = 0
-	             x_4' = 1
-	             (x_5, x_5') = loop (acc = x_2 * x_4, acc' = x_2' * x_4 + x_2 * x_4') for i < 1 do
-                                  (acc * (x_2 * x_4), acc' * (x_2 * x_4) + acc * (x_2' * x_4 + x_2 * x_4'))
+	               x_4' = 1
+	               (x_5, x_5') = loop (acc = x_2 * x_4, acc' = x_2' * x_4 + x_2 * x_4') for i < 1 do
+                                 (acc * (x_2 * x_4), acc' * (x_2 * x_4) + acc * (x_2' * x_4 + x_2 * x_4'))
 	
-	         in  |x_6|(dx_6/dx_4) + |x_5|x_5'
+	           in  |x_6|(dx_6/dx_4) + |x_5|x_5'
 			 
 # Optimizations
 
@@ -258,8 +258,8 @@ derivative with respect to a single component
 If we naively apply forward mode to the inner product `b^T x`, we obtain
 
     (b^T x)' = (b_0 x_0 + ... + b_{n-1} x_{n-1})'
-	         = b_0 x_0' + ... + b_{n-1} x_{n-1}'
-			 = reduce (+) 0 (zipWith (*) b x')
+             = b_0 x_0' + ... + b_{n-1} x_{n-1}'
+	           = reduce (+) 0 (zipWith (*) b x')
 		 
 However, if the compiler is aware that `x'` is one-hot (with `x_i' = 1`), we can immediately simplify
 the above to
@@ -280,13 +280,13 @@ Showing associativity, we have
 
     
     ((x,x') *' (y,y')) *' (z,z') = (xy, x'y + y'x) *' (z,z')
-	                             = (xyz, x'yz + y'xz + xyz')
-								 = (x,x') *'((y,y') *' (z,z'))
+                                 = (xyz, x'yz + y'xz + xyz')
+                     			    	 = (x,x') *'((y,y') *' (z,z'))
 								 
 A neutral element is an en element `e` such that `x *' e = x` 
 and `e *' x = x`. for all `x = (y, y')`. `e = (1,0)` works:
 
     x *' e = (y, y') *' (1, 0) 
-	       = (y, y')
-		   = (1, 0) *' (y, y')
-		   = e *' x
+	         = (y, y')
+           = (1, 0) *' (y, y')
+           = e *' x
