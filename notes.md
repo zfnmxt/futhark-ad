@@ -237,7 +237,7 @@ for our adjoint:
                                   (acc * (x_2 * x_4), acc' * (x_2 * x_4) + acc * (x_2' * x_4 + x_2 * x_4'))
 	
 	         in  |x_6|(dx_6/dx_4) + |x_5|x_5'
-
+			 
 # Optimizations
 
 ## Inner-product
