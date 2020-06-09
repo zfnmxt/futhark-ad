@@ -237,7 +237,53 @@ for our adjoint:
                                  (acc * (x_2 * x_4), acc' * (x_2 * x_4) + acc * (x_2' * x_4 + x_2 * x_4'))
 
              in  |x_6|(dx_6/dx_4) + |x_5|x_5'
+             
+# Futhark Implementation
 
+Automatic differentiation eixsts as a *compiler pass* in the Futhark
+compiler.  The input to this pass is an [A-normal
+form](https://en.wikipedia.org/wiki/A-normal_form) program in the Core
+IR, which look very similar to the programs already considered.
+
+These programs consist of a number of *functions*
+which consists of arguments and a function body. Function bodies
+consist of a series of *statements* and a list of return values.
+
+A statement consists of a pattern `p = (x_1,.., x_n)`, which is a tuple
+of variables, and an expression `e` (which returns a tuple of the same shape as `p`):
+
+    (x_1,...,x_n) = e
+    
+## Some questions: 
+
+* Should there be a mechanism that returns the forward mode derivative
+of any statement? This way, they can easily be incorporated into
+the computation of the adjoint. This also means that the adjoint
+map must support statements (perhaps `A : VName -> (VName, Stms)`)?
+
+* Things should be more modular. Should be able to take a statement and pass
+it to some function `fwd` or `rev` and retrieve the corresponding derivative
+statement as a result. In some sense, the derivative should just be the
+derivative and the method (`fwd` or `rev`) should be irrelevant. (In this scenario,
+what would the output be? I suppose you could just wrap things in a `Body` to make it clear
+what the output is.)
+
+* How to mix adjoints/gradients is non-obvious. Generally, we'll have
+some map of adjoints as well as our primal program.
+                
+* Should be able to differentiate an arbitrary series of statements 
+instead of just functions (or bodies)?
+
+* How do we seamlessly handle looking up the type of variables? 
+(This is needed for intiailizing gradients and adjoints.) Also, what type
+should tangents/adjoints take? Should they just reflect their primal
+counterparts?
+
+## Forward mode
+
+For each primal variable `x_i`, we associate a tangent variable
+`x_grad_i` in a mapping `T : VName -> VName`.
+    
 # Optimizations
 
 ## Inner-product
