@@ -144,17 +144,17 @@ This means that we can simply insert all adjoints in reverse-order
 after the primal statements of the program in order to
 satisfy data dependencies:
 
-    x_1 = <input>
-    x_2 = <input>
-    x_3 = x_1 * x_2
-    x_4 = x_3 * x_1
-    x_5 = x_3 * x_4
-  |x_5| = ...
-  |x_4| = ...
-  .
-  .
-  .
-  |x_1| = ...
+    x_1   = <input>
+    x_2   = <input>
+    x_3   = x_1 * x_2
+    x_4   = x_3 * x_1
+    x_5   = x_3 * x_4
+    |x_5| = ...
+    |x_4| = ...
+    .
+    .
+    .
+    |x_1| = ...
 
 ## Difficulties
 
