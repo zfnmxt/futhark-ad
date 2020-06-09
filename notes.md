@@ -13,9 +13,9 @@ derivative of each variable `x_i` with respect to some
 intput variable (`x_1` or `x_2`). That is, our objective is to compute
 the tangent variable
 
-    x_i' = dx_i/x_*
+    x_i' = dx_i/x_#
 
-for each `i`, with `* = 1` or `* = 2`. This can be done by direct
+for each `i`, with `# = 1` or `# = 2`. This can be done by direct
 application of the chain rule. For example,
 
     dx_5/dx_1 = (dx_5/dx_3) * (dx_3/dx_1) + (dx_5/dx_4) * (dx_4/dx_1)
@@ -37,10 +37,10 @@ we immediately can write
     x_5' = x_4 * x_3' + x_3 * x_4'
 
 trusting that previous steps computed `x_3'` and `x_4'`. This has the
-consequence that we do not care if `* = 1` or `* = 2`. We choose `* =
-1` by setting `(x_1', x_2) = (1, 0)` or `* = 2` with `(x_1', x_2) =
+consequence that we do not care if `# = 1` or `# = 2`. We choose `# =
+1` by setting `(x_1', x_2) = (1, 0)` or `# = 2` with `(x_1', x_2) =
 (0, 1)`; the symbolic manipulation is unchanged. This works because,
-in the case with `* = 1`, any derivative components which depend on
+in the case with `# = 1`, any derivative components which depend on
 `x_2'` will do so via a multiplicative factor (due to the chain rule) and
 hence will be zeroed out by `x_2' = 0` (and likewise, factors that
 depend on `x_1'` will be "chosen" by `x_1' = 1`).
