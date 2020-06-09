@@ -7,35 +7,35 @@ Consider the program
     x_3 = x_1 * x_2
     x_4 = x_3 * x_1
     x_5 = x_3 * x_4
-	
+
 In forward-mode automatic differentiation, we wish to compute the
 derivative of each variable `x_i` with respect to some
 intput variable (`x_1` or `x_2`). That is, our objective is to compute
 the tangent variable
 
     x_i' = dx_i/x_*
-	
+
 for each `i`, with `* = 1` or `* = 2`. This can be done by direct
 application of the chain rule. For example,
 
     dx_5/dx_1 = (dx_5/dx_3) * (dx_3/dx_1) + (dx_5/dx_4) * (dx_4/dx_1)
               = (dx_5/dx_3) * x_3' + (dx_5/dx_4) * x_4'
-	            = x_4 * x_3' + x_3 * x_4'
+              = x_4 * x_3' + x_3 * x_4'
 
-This means that we can build-up the derivatives of any intermediate 
+This means that we can build-up the derivatives of any intermediate
 variable by first computing the derivative of all the variables
 it directly depends upon (and so on) and then using the chain rule.
 This is the principle idea of forward-mode differentiation.
 
-A crucial point here is that we only need "local" information to 
+A crucial point here is that we only need "local" information to
 build the intermediate derivative. Given
 
     x_5 = x_3 * x_4
-	
+
 we immediately can write
 
     x_5' = x_4 * x_3' + x_3 * x_4'
-	
+
 trusting that previous steps computed `x_3'` and `x_4'`. This has the
 consequence that we do not care if `* = 1` or `* = 2`. We choose `* =
 1` by setting `(x_1', x_2) = (1, 0)` or `* = 2` with `(x_1', x_2) =
@@ -47,7 +47,7 @@ depend on `x_1'` will be "chosen" by `x_1' = 1`).
 
 ## Implementation
 
-For each source variable `x_i` we associate a corresponding 
+For each source variable `x_i` we associate a corresponding
 tangent variable `x_i'` and provide a mapping `D : Primal -> Tangent`
 from the primal variables to their tangent counterparts.
 
@@ -56,10 +56,10 @@ of the form
 
     x_i = f(x_j, x_k, ..., x_l)
 
-we compute 
+we compute
 
     x_i' = f' x_j' + f' x_k' + ... + f' x_l'
-	
+
 Since we start from top-to-bottom, the derivatives `x_j', x_k', ...,
 x_l'` have all already been computed (each index is `< i`).
 
@@ -81,11 +81,11 @@ Again, we consider the program
     x_4 = x_3 * x_1
     x_5 = x_3 * x_4
 
-Reverse mode asks if we can compute the derivative in a bottom-up traversal 
+Reverse mode asks if we can compute the derivative in a bottom-up traversal
 by computing adjoints of variables, defined by
 
     |x_i| = dx_5/dx_i
-	
+
 where we conider `x_5` to be the output of the program. The
 distinction between tangent `x_i'` (from the forward mode) and the
 adjoint `|x_i|` that the tangent *fixes the derivative with respect
@@ -94,10 +94,10 @@ to a given input variable* whereas the adjoint of `x_i` is the
 
 Again, we build the adjoints of each variable via the chain-rule, since
 
-    |x_i| = dx_5/dx_i 
+    |x_i| = dx_5/dx_i
           = sum_{j, x_j is a function of x_i} (dx_5/dx_j)(dx_j/dx_i)
           = sum_{j, x_j is a function of x_i} |x_j|(dx_j/dx_i)
-	
+
 where the condition `x_j is a function x_i` just means that `x_i` appears on the
 RHS of a statement setting `x_j`. At the end, we end up with `|x_1| = dx_5/dx_1`
 and `|x_2| = dx_5/dx_2`, the quantities of interest.
@@ -107,7 +107,7 @@ with forward mode this would've taken two passes (once with `x_1' = 1` and
 once with `x_2' = 1`). For a given output variable, reverse mode retrieves all partial
 derivatives (that is, it retrieves a *row* of the Jacobian of the program) of that output.
 
-On the other hand, forward mode retrieves all a partial derivative for each output, given 
+On the other hand, forward mode retrieves all a partial derivative for each output, given
 an input. For vector-valued functions, this means that we obtain a *column* of the Jacobian
 of the program.
 
@@ -119,11 +119,11 @@ to a tuple of the correspnding adjoint variable as well as an expression for the
 Given a statement
 
     x_i = f(x_j, x_k, ..., x_l)
-	
+
 we modify the entries for `x_j, x_k, ..., x_l` in `A` with
 
     map (\x -> insertWith (+) x (|x_i| * (dx_i/dx)))  [x_j, x_k, ..., x_l]
-	
+
 That is, for each RHS variable, we add to its adjoint the sensitivity
 of the variable output to `x_i` (expressed by `|x_i|`) multiple by the
 variable's sensitivity to `x_i` itself.
@@ -137,11 +137,11 @@ of LHS variables in statements that `x_i` appears on the RHS of, say `|x_j|`.
 Additionally any dependency of `dx_j/dx_i` must have also already appeared,
 but `dx_j/dx_i` will only consist of primal variables (appearing before `x_j`).
 
-Since `x_j` depends directly on `x_i`, `x_i` must have be defined 
-*before* `x_j` in the program. So, `|x_i|` only depends on 
+Since `x_j` depends directly on `x_i`, `x_i` must have be defined
+*before* `x_j` in the program. So, `|x_i|` only depends on
 the adjoints of variables that appear after `x_i` in the program.
 This means that we can simply insert all adjoints in reverse-order
-after the primal statements of the program in order to 
+after the primal statements of the program in order to
 satisfy data dependencies:
 
     x_1 = <input>
@@ -149,17 +149,17 @@ satisfy data dependencies:
     x_3 = x_1 * x_2
     x_4 = x_3 * x_1
     x_5 = x_3 * x_4
-	|x_5| = ...
-	|x_4| = ...
-	.
-	.
-	.
-	|x_1| = ...
-	
+  |x_5| = ...
+  |x_4| = ...
+  .
+  .
+  .
+  |x_1| = ...
+
 ## Difficulties
 
 Some difficulties arise because reverse-mode statements must appear
-*after* the primal variables. Consider 
+*after* the primal variables. Consider
 
     x_1 = <input>
     x_2 = <input>
@@ -172,17 +172,17 @@ Some difficulties arise because reverse-mode statements must appear
 Then,
 
     |x_4| = |x_6|(dx_6/dx_4) + |x_5|(dx_5/dx_4)
-	
+
 But how do we compute `dx_5/dx_4`? Unrolling the loop,
 we see that the computation can be represented as
 
     acc_1 = x_4
     acc_2 = acc_1 * x_4
     acc_3 = acc_2 * x_4
-	
+
 Computing the reverse-mode derivative is now trivial and we simply
 follow the method already described. The
-issue is that we cannot statically unroll all loops . 
+issue is that we cannot statically unroll all loops .
 A fix is to modify the loop to produce a scan
 of intermediate expressions:
 
@@ -201,7 +201,7 @@ simply insert a corresponding tangent statement into the loop:
 
     (x_5, x_5') = loop (acc = x_4, acc' = x_4') for i < 2 do
                     (acc * x_4, acc' * x_4 + acc * x_4')
-						  
+
 where `x_5' = dx_5/dx_4`, i.e., the tangents are derivatives with
 respect to `dx_4`.
 
@@ -212,7 +212,7 @@ instead of specifying it directly.
 We can now specify `|x_4|`:
 
     |x_4| = let x_4' = 1
-	              (x_5, x_5') = loop (acc = x_4, acc' = x_4') for i < 2 do
+                (x_5, x_5') = loop (acc = x_4, acc' = x_4') for i < 2 do
                                 (acc * x_4, acc' * x_4 + acc * x_4')
                 in  |x_6|(dx_6/dx_4) + |x_5|x_5'
 
@@ -226,18 +226,18 @@ gradients:
 
     (x_5, x_5') = loop (acc = x_2 * x_4, acc' = x_2' * x_4 + x_2 * x_4') for i < 1 do
                     (acc * (x_2 * x_4), acc' * (x_2 * x_4) + acc * (x_2' * x_4 + x_2 * x_4'))
-					  
+
 And we simply choose the gradient we wish to take the derivative with respect to
 for our adjoint:
 
-   
+
     |x_4| =  let x_2' = 0
-	               x_4' = 1
-	               (x_5, x_5') = loop (acc = x_2 * x_4, acc' = x_2' * x_4 + x_2 * x_4') for i < 1 do
+                 x_4' = 1
+                 (x_5, x_5') = loop (acc = x_2 * x_4, acc' = x_2' * x_4 + x_2 * x_4') for i < 1 do
                                  (acc * (x_2 * x_4), acc' * (x_2 * x_4) + acc * (x_2' * x_4 + x_2 * x_4'))
-	
-	           in  |x_6|(dx_6/dx_4) + |x_5|x_5'
-			 
+
+             in  |x_6|(dx_6/dx_4) + |x_5|x_5'
+
 # Optimizations
 
 ## Inner-product
@@ -259,11 +259,11 @@ If we naively apply forward mode to the inner product `b^T x`, we obtain
 
     (b^T x)' = (b_0 x_0 + ... + b_{n-1} x_{n-1})'
              = b_0 x_0' + ... + b_{n-1} x_{n-1}'
-	           = reduce (+) 0 (zipWith (*) b x')
-		 
+             = reduce (+) 0 (zipWith (*) b x')
+
 However, if the compiler is aware that `x'` is one-hot (with `x_i' = 1`), we can immediately simplify
 the above to
- 
+
     (b^T x) = b_i x_i'
 
 ## Reductions
@@ -275,18 +275,18 @@ which operates on tuples of primals and their tangents:
 
     (x,x') *' (y,y') = (xy, x'y + y'x)
 
-Reduce operators in Futhark must a) be associative and b) have a neutral element. 
+Reduce operators in Futhark must a) be associative and b) have a neutral element.
 Showing associativity, we have
 
-    
+
     ((x,x') *' (y,y')) *' (z,z') = (xy, x'y + y'x) *' (z,z')
                                  = (xyz, x'yz + y'xz + xyz')
-                     			    	 = (x,x') *'((y,y') *' (z,z'))
-								 
-A neutral element is an en element `e` such that `x *' e = x` 
+                                 = (x,x') *'((y,y') *' (z,z'))
+
+A neutral element is an en element `e` such that `x *' e = x`
 and `e *' x = x`. for all `x = (y, y')`. `e = (1,0)` works:
 
-    x *' e = (y, y') *' (1, 0) 
-	         = (y, y')
+    x *' e = (y, y') *' (1, 0)
+           = (y, y')
            = (1, 0) *' (y, y')
            = e *' x
