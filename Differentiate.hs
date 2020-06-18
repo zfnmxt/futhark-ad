@@ -641,7 +641,7 @@ revFun consts fundef = do
     -- let rts = funDefRetType fundef ++ map paramAttr params
     return $ fundef { funDefParams = funDefParams fundef -- ++ resVNames
                   , funDefBody = Body attr (stms <> adjointParams) res'
-                  , funDefRetType = concatMap (replicate (length params + 1)) $ funDefRetType fundef -- ridiculous, fix
+                  , funDefRetType = concatMap (replicate (length params + 0)) $ funDefRetType fundef -- ridiculous, fix
                   , funDefEntryPoint = (\(a, r) -> (a, concat (replicate (length params + 1) r))) <$> (funDefEntryPoint fundef)
                   }
       

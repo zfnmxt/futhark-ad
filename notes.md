@@ -45,6 +45,23 @@ in the case with `# = 1`, any derivative components which depend on
 hence will be zeroed out by `x_2' = 0` (and likewise, factors that
 depend on `x_1'` will be "chosen" by `x_1' = 1`).
 
+## SOACS
+
+### Map
+Forward-mode on maps
+
+    xs = map (\a -> body(a)) as
+    
+is straight-forward:
+
+    (xs, xs') = map (\a -> body(a))' (zip as as')
+    
+For example,
+
+    xs  = map (\a -> 2*a) [a_1, a_2, a_3]
+    
+    xs' = map (\(a, a') -> (2*a, 2)) [(a_1, a_1'), (a_2, a_2'), (a_3, a_3')]
+
 ## Implementation
 
 For each source variable `x_i` we associate a corresponding
@@ -155,7 +172,53 @@ satisfy data dependencies:
     .
     .
     |x_1| = ...
+    
+## SOACS
 
+### Map
+Consider
+
+    xs = map (\a -> body(a)) as
+    
+If `body(a)` references no free variables then things remain fairly simple:
+
+    |a[i]| += |xs[i]| * d(body(a[i]))/d(a[i])
+    
+where we compute `d(body(a[i]))/d(a[i])` by either forward or reverse mode.
+
+If `body(a)` does reference free variables, then the adjoints of those
+variables will be affected by the map. In this case, we have
+
+    |a[i]| += |xs[i]| * d(body(a[i]))/d(a[i])
+    
+as before, but we also have
+
+    |v| += |xs[i]| * d(body(a[i]))/d(v)
+
+where `v` is a free variable in `body(a[i])`, for *each* `i`. 
+
+#### Efficient adjoint updating
+
+Instead, we reduce over `as` and accumulate the results in an array
+`|as| ++ |vs|` where `|vs|` is a list of the adjoints of all free
+variables occuring in `body`.
+ 
+    let fvs = freevars(body)
+    let f = (\(a, i) acc -> d(body(a))/da )
+    in reduce f [0,..,0] (zip as [0..])
+
+We can efficiently compute the derivative of the mapping function 
+and only need to do so once. 
+
+
+
+In the no-free-variables case, we have
+
+    let f_bin = lookupAdjoint
+    let f_val = 
+
+    hist [0,...,0] f_bin f_val as
+    
 ## Difficulties
 
 Some difficulties arise because reverse-mode statements must appear
@@ -268,16 +331,12 @@ derivative and the method (`fwd` or `rev`) should be irrelevant. (In this scenar
 what would the output be? I suppose you could just wrap things in a `Body` to make it clear
 what the output is.)
 
-* How to mix adjoints/gradients is non-obvious. Generally, we'll have
-some map of adjoints as well as our primal program.
-                
-* Should be able to differentiate an arbitrary series of statements 
-instead of just functions (or bodies)?
-
-* How do we seamlessly handle looking up the type of variables? 
-(This is needed for intiailizing gradients and adjoints.) Also, what type
+* How do we seamlessly handle looking up the type of variables?  (This
+is needed for intiailizing gradients and adjoints.) Also, what type
 should tangents/adjoints take? Should they just reflect their primal
-counterparts?
+counterparts? (`inScopeOf` fixes most (all?) of the scoping issues, so
+that `lookupType` should work, but not sure if this is the "right"
+way.)
 
 ## Forward mode
 
@@ -336,3 +395,4 @@ and `e *' x = x`. for all `x = (y, y')`. `e = (1,0)` works:
            = (y, y')
            = (1, 0) *' (y, y')
            = e *' x
+           
