@@ -49,7 +49,7 @@ import           Futhark.Pass.Simplify
 import           Futhark.Passes                            (standardPipeline)
 import           Futhark.Pipeline
 import           Futhark.IR.Primitive
-import           Futhark.IR.SeqMem             (SeqMem)
+import           Futhark.IR.SeqMem                         (SeqMem)
 import           Futhark.IR.SOACS
 import           Futhark.Util
 import           Futhark.Util.Options
@@ -58,14 +58,20 @@ import           Futhark.Util.Pretty                       (pretty)
 data Adj = Adj VName (Stms SOACS)
 
 data Env = Env
-    { adjs :: M.Map VName Adj
+    { adjs :: M.Map VName VName
+    , tape :: M.Map VName VName
     , vns :: VNameSource
     }
     
 data REnv = REnv
     { tans :: M.Map VName VName
     , envScope :: Scope SOACS
+--    , strat :: FwdStrat
     }
+
+--data FwdStrat = Interleave
+--              | After
+--              | Decoupled
     
 data BindEnv = IntEnv IntType Overflow
              | FloatEnv FloatType
@@ -94,10 +100,16 @@ runADBind env m = (runBinder_ . (flip runReaderT) env) m
 
 runADM :: MonadFreshNames m => ADM a -> REnv -> m a
 runADM (ADM m) renv =
-  modifyNameSource $ \vn -> (\(a, env) -> (a, vns env)) $ runState (runReaderT m renv) (Env mempty vn)
+  modifyNameSource $ \vn -> (\(a, env) -> (a, vns env)) $ runState (runReaderT m renv) (Env mempty mempty vn)
 
 tanVName :: VName -> ADM VName
 tanVName v = newVName (baseString v <> "_tan")
+
+adjVName :: VName -> ADM VName
+adjVName v = newVName (baseString v <> "_adj")
+
+accVName :: VName -> ADM VName
+accVName v = newVName (baseString v <> "_acc")
 
 zeroTan :: Type -> ADM SubExp
 zeroTan (Prim t) = return $ constant $ blankPrimValue t
@@ -108,6 +120,13 @@ mkConst (FloatEnv ft) = Constant . FloatValue . floatValue ft
 
 mkConstM :: (Integral i) => i -> ADBind SubExp
 mkConstM i = asks ((flip mkConst) i)
+
+--class AdjBinder a where
+--  newAdj :: a -> ADM (VName)
+--  addAdj :: VName -> Stms SOACS -> ADM (VName)
+--
+--instance AdjBinder (PatElemT dec) where
+--  newAdj (PatElem p t) = 
 
 class TanBinder a where
   mkTan :: a -> ADM a
@@ -137,35 +156,72 @@ instance TanBinder (Param attr) where
 instance (TanBinder a) => TanBinder [a] where
   mkTan = mapM mkTan
   getVNames = concatMap getVNames
-  
+
+data TanStm = TanStm { primalStm :: Stm
+                     , tanStms :: Stms SOACS
+                     }
+              
 class Tangent a where
   type TangentType a :: *
   tangent :: a -> ADM (TangentType a)
+
+instance Tangent VName where
+  type TangentType VName = VName
+  tangent v = do
+    maybeTan <- asks $ M.lookup v . tans
+    case maybeTan of
+      Just v' -> return v'
+      Nothing -> error "Oh no!"
     
 instance Tangent SubExp where
   type TangentType SubExp = SubExp
   tangent (Constant c) = zeroTan $ Prim $ primValueType c
-  tangent (Var v) = do
-    maybeTan <- asks $ M.lookup v . tans
-    case maybeTan of
-      Just v' -> return $ Var v'
-      Nothing -> error "Oh no!"
+  tangent (Var v) = Var <$> tangent v
 
 instance Tangent Stm where
   type TangentType Stm = TanStm
   tangent = (flip fwdStm) return
 
+instance Tangent (Stms SOACS) where
+  type TangentType (Stms SOACS) = [TanStm]
+  tangent = fwdStms pure
+
 class Adjoint a where
   type AdjointType a :: *
-  calcAdj :: a -> ADM (M.Map VName Adj)
-  calcAdj_ :: a -> ADM ()
-  calcAdj_ = void . calcAdj
-
   adjoint :: a -> ADM (AdjointType a)
 
 instance Adjoint SubExp where
-  calcAdj Constant{} = adjs <$> get
-  calcAdj (Var p)    = undefined
+  type AdjointType SubExp = SubExp
+  adjoint (Constant c) = zeroTan $ Prim $ primValueType c
+  adjoint (Var v) = do
+    maybeAdj <- gets $ M.lookup v . adjs
+    case maybeAdj of
+      Just v' -> return $ Var v'
+      Nothing -> error "Oh no!"
+
+--instance Adjoint Stm where
+--  type AdjointType Stm = Stms SOACS
+--  adjoint = revStm
+--
+
+revFwdStm :: Stm -> ADM Stm
+revFwdStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (DoLoop [] valPats (ForLoop v it bound []) body)) = do
+   ps <- accVName p
+   let pAcc = PatElem ps (Array t (Shape [bound]) NoUniqueness)
+       Body decs stms [res] = body
+       updateAcc = BasicOp $ Update ps [DimSlice (Var v) (Constant $ IntValue $ intValue it 1) (Constant $ IntValue $ intValue it 1)] res
+   updateAccStms <- runBinderT'_ $ letBind (Pattern [] [pAcc]) updateAcc
+   let body' = Body decs (stms <> updateAccStms) [res, Var ps]
+   return (Let (Pattern [] [pat, pAcc]) aux (DoLoop [] valPats (ForLoop v it bound []) body'))
+
+--fwdStm stm@(Let (Pattern [] pes) aux (DoLoop [] valPats (ForLoop v it bound []) body)) m = do
+--  let (valParams, vals) = unzip valPats
+--  vals' <- mapM tangent vals
+--  withTans valParams $ \valParams' -> do
+--    (_, body') <- fwdBodyAfter body
+--    withTans pes $ \pes' ->
+--      m $
+--      TanStm stm (oneStm (Let (Pattern [] pes') aux (DoLoop [] (valPats ++ (zip valParams' vals')) (ForLoop v it bound []) body')))
 
 ($^) :: String -> SubExp -> ADBind SubExp
 ($^) f x = lift $ letSubExp "f x" $ Apply (nameFromString f) [(x, Observe)] [primRetType rt] (Safe, noLoc, mempty)
@@ -210,10 +266,6 @@ instance Adjoint SubExp where
              IntEnv it _ -> Pow it
              FloatEnv ft -> FPow ft
   lift $ letSubExp (pretty x ++ "**^" ++ pretty y) $ BasicOp (BinOp op x y)
-
-data TanStm = TanStm { primalStm :: Stm
-                     , tanStms :: Stms SOACS
-                     }
 
 bindTans :: [PatElem] -> SubExp -> ADBind ()
 bindTans pes' se = do
@@ -311,91 +363,55 @@ fwdStm stm@(Let (Pattern [] pes) aux (BasicOp (ConvOp op x))) m = do
     m $
     TanStm stm (oneStm (Let (Pattern [] pes') aux (BasicOp (ConvOp op x'))))
 
---dStm stm@(Let (Pattern [] pes) aux assert@(BasicOp (Assert x err (loc, locs)))) m =
---  withTan pes $ \pe' -> do
---    m $
---      oneStm stm <>
---      oneStm (Let (Pattern [] [pes']) aux assert)
---
----- d/dx (f^g) =  g f^{g - 1} f' + f^g ln(f) g' if f(x) > 0
----- https://en.wikipesdia.org/wiki/Differentiation_rules
---dStm stm@(Let (Pattern [] pes) aux (BasicOp (BinOp (Pow it) f g))) m = do
---  f' <- tangent f
---  g' <- tangent g
---  withTan pes $ \pe' -> do
---    stms <- runADBind (defEnv { intTypes = it }) $ do
---      x1 <- g -^ mkInt it 1 -- x1 = g - 1
---      x2 <- f **^ x1        -- x2 = f^x1 = f^{g - 1}
---      x3 <- g *^ x2         -- x3 = g f^{g-1} = g x2
---      x4 <- x3 *^ f'        -- x4 = g f^{g-1} f' = x3 f'
---      x5 <- "log32" $^ f    -- x5 = log (f)  Probably should intelligently select log32 or log64
---      x6 <- f **^g          -- x6 = f^g
---      x7 <- x6 *^ x5        -- x7 = f^g ln (f) = x6 x5
---      x8 <- x7 *^ g'        -- x8 = f^g ln(f) g' = x7 g'
---      x9 <- x4 +^ x8        -- x9 = g f^{g - 1} f' + f^g ln(f) g'
---      bindGrads pes' x9
---    m $ oneStm stm <> stms
---    
---dStm stm@(Let (Pattern [] pes) aux (BasicOp (BinOp (FPow ft) f g))) m = do
---  f' <- tangent f
---  g' <- tangent g
---  withTan pes $ \pe' -> do
---    stms <- runADBind (defEnv { floatTypes = ft }) $ do
---      x1 <- g -^. mkFloat ft 1 -- x1 = g - 1
---      x2 <- f **^. x1        -- x2 = f^x1 = f^{g - 1}
---      x3 <- g *^. x2         -- x3 = g f^{g-1} = g x2
---      x4 <- x3 *^. f'        -- x4 = g f^{g-1} f' = x3 f'
---      x5 <- "log32" $^ f    -- x5 = log (f)  Probably should intelligently select log32 or log64
---      x6 <- f **^. g          -- x6 = f^g
---      x7 <- x6 *^. x5        -- x7 = f^g ln (f) = x6 x5
---      x8 <- x7 *^. g'        -- x8 = f^g ln(f) g' = x7 g'
---      x9 <- x4 +^. x8        -- x9 = g f^{g - 1} f' + f^g ln(f) g'
---      bindGrads pes' x9
---    m $ oneStm stm <> stms
---
---dStm stm@(Let (Pattern [] pes) aux cOp@(BasicOp CmpOp{})) m =
---  withTan pes $ \pe' -> do
---    m $
---      oneStm stm <>
---      oneStm (Let (Pattern [] [pes']) aux cOp)
---
---dStm stm@(Let (Pattern [] pes) aux (If cond t f attr)) m = do
---  t' <- dBody t
---  f' <- dBody f
---  withTan pes $ \pe' ->
---    m $
---    oneStm stm <>
---    oneStm (Let (Pattern [] [pes']) aux (If cond t' f' attr))
---
---dStm stm@(Let (Pattern [] pess) aux (DoLoop [] valPats (WhileLoop v) body)) m = do
---  let (valParams, vals) = unzip valPats
---  vals' <- mapM tangent vals
---  withTanParams valParams $ \valParams' -> do
---    body' <- dBody body
---    withTans pess $ \pes' -> do
---      m $ oneStm (Let (Pattern [] (pess ++ pes')) aux (DoLoop [] (valPats ++ (zip valParams' vals')) (WhileLoop v) body'))
---
---dStm stm@(Let (Pattern [] pess) aux (DoLoop [] valPats (ForLoop v it bound []) body)) m = do
---  let (valParams, vals) = unzip valPats
---  vals' <- mapM tangent vals
---  withTanParams valParams $ \valParams' -> do
---    body' <- dBody body
---    withTans pess $ \pes' -> do
---      m $ oneStm (Let (Pattern [] (pess ++ pes')) aux (DoLoop [] (valPats ++ (zip valParams' vals')) (ForLoop v it bound []) body'))
---      
---dStm stm@(Let (Pattern [] pess) aux (DoLoop [] valPats (ForLoop i it bound loop_vars) body)) m = do
---  let (valParams, vals) = unzip valPats
---  vals' <- mapM tangent vals
---  withTanParams valParams $ \valParams' ->
---    withTanParams (map fst loop_vars) $ \loopParams' -> do
---      let f p n = do n' <- gradVName n; return (p, n')
---      loop_vars' <- zipWithM f loopParams' (map snd loop_vars)
---  
---      withTans pess $ \pes' -> do
---        m $ oneStm (Let (Pattern [] (pess ++ pes')) aux (DoLoop [] (valPats ++ (zip valParams' vals')) (ForLoop i it bound (loop_vars ++ loop_vars')) body'))
---
---dStm stm _ =
---  error $ "unhandled AD for Stm: " ++ pretty stm ++ "\n" ++ show stm
+fwdStm stm@(Let (Pattern [] pes) aux assert@(BasicOp (Assert x err (loc, locs)))) m =
+  withTan pes $ \pes' ->
+    m $
+    TanStm stm (oneStm (Let (Pattern [] pes') aux assert))
+
+fwdStm stm@(Let (Pattern [] pes) aux cOp@(BasicOp CmpOp{})) m =
+  withTan pes $ \pes' ->
+    m $
+    TanStm stm (oneStm (Let (Pattern [] pes') aux cOp))
+
+fwdStm stm@(Let (Pattern [] pes) aux (If cond t f attr)) m = do
+  t' <- fwdBodyInterleave t
+  f' <- fwdBodyInterleave f
+  withTan pes $ \pes' ->
+    m $
+    TanStm stm (oneStm (Let (Pattern [] pes') aux (If cond t' f' attr)))
+
+fwdStm stm@(Let (Pattern [] pes) aux (DoLoop [] valPats (WhileLoop v) body)) m = do
+  let (valParams, vals) = unzip valPats
+  vals' <- mapM tangent vals
+  withTans valParams $ \valParams' -> do
+    (_, body') <- fwdBodyAfter body
+    withTans pes $ \pes' ->
+      m $
+      TanStm stm (oneStm (Let (Pattern [] pes') aux (DoLoop [] (valPats ++ (zip valParams' vals')) (WhileLoop v) body')))
+
+fwdStm stm@(Let (Pattern [] pes) aux (DoLoop [] valPats (ForLoop v it bound []) body)) m = do
+  let (valParams, vals) = unzip valPats
+  vals' <- mapM tangent vals
+  withTans valParams $ \valParams' -> do
+    (_, body') <- fwdBodyAfter body
+    withTans pes $ \pes' ->
+      m $
+      TanStm stm (oneStm (Let (Pattern [] pes') aux (DoLoop [] (valPats ++ (zip valParams' vals')) (ForLoop v it bound []) body')))
+
+fwdStm stm@(Let (Pattern [] pes) aux (DoLoop [] valPats (ForLoop i it bound loop_vars) body)) m = do
+  let (valParams, vals) = unzip valPats
+  vals' <- mapM tangent vals
+  withTans valParams $ \valParams' ->
+    withTans (map fst loop_vars) $ \loopParams' -> do
+      let f p n = do n' <- tangent n; return (p, n')
+      loop_vars' <- zipWithM f loopParams' (map snd loop_vars)
+      (_, body') <- fwdBodyAfter body
+      withTans pes $ \pes' ->
+        m $
+        TanStm stm (oneStm (Let (Pattern [] pes') aux (DoLoop [] (valPats ++ (zip valParams' vals')) (ForLoop i it bound (loop_vars ++ loop_vars')) body')))
+
+fwdStm stm _ =
+  error $ "unhandled AD for Stm: " ++ pretty stm ++ "\n" ++ show stm
 
 fwdStms :: (Monoid a) => (TanStm -> a) -> Stms SOACS -> ADM a
 fwdStms f (stm :<| stms) =
@@ -415,6 +431,18 @@ fwdStmsAfter = fwdStms f
 fwdStmsAfter_ :: Stms SOACS -> ADM (Stms SOACS)
 fwdStmsAfter_ = ((\(p, t) -> p <> t) <$>) . fwdStmsAfter
 
-revStm :: Stm -> ADM (Stms SOACS)
-revStm (Let (Pattern [] pes) aux (BasicOp (BinOp (FAdd ft) x y))) = undefined
-   
+fwdBody :: (Stms SOACS -> ADM (Stms SOACS)) -> Body -> ADM Body
+fwdBody f (Body _ stms res) = do
+  stms' <- f stms
+  res'  <- mapM tangent res
+  return $ mkBody stms' $ res ++ res'
+
+fwdBodyInterleave :: Body -> ADM Body
+fwdBodyInterleave = fwdBody fwdStmsInterleave
+
+fwdBodyAfter :: Body -> ADM (Body, Body)
+fwdBodyAfter body@(Body _ stms res) = do
+  stms' <- snd <$> fwdStmsAfter stms
+  res'  <- mapM tangent res
+  return $ (body, mkBody stms' res')
+  

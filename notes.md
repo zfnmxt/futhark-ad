@@ -48,7 +48,7 @@ depend on `x_1'` will be "chosen" by `x_1' = 1`).
 ## SOACS
 
 ### Map
-Forward-mode on maps
+Forward mode on maps
 
     xs = map (\a -> body(a)) as
     
@@ -61,6 +61,33 @@ For example,
     xs  = map (\a -> 2*a) [a_1, a_2, a_3]
     
     xs' = map (\(a, a') -> (2*a, 2)) [(a_1, a_1'), (a_2, a_2'), (a_3, a_3')]
+    
+### Reduce
+Consider
+
+    x = reduce op e as = a_0 `op` (a_1 `op` ( ... (a_{n-2} `op` a_{n-1} ) ... ))
+    
+If we convert the `reduce` into a `scan` we have
+
+
+    x = scan op e as
+       = [a_0 `op` a_1, a_0 `op` (a_1 `op` a_2), ..., a_0 `op` (a_1 `op` ( ... (a_{n-2} `op` a_{n-1} ) ... ))]
+            
+Then,
+
+    x' = [(a_0 `op` a_1)', (a_0 `op` (a_1 `op` a_2))', ..., (a_0 `op` (a_1 `op` ( ... (a_{n-2} `op` a_{n-1} ) ... )))']
+    
+By the chain rule (and the associativity of `op`):
+
+    x' = [ d(a_0 `op` a_1)/d(a_0) + d(a_0 `op` a_1)/d(a_1)
+          , let u = a_0 `op` a_1
+            in d(a_2 `op` u)/da_2 + d(a_2 `op` u)/du * (du/da_1 + du/da_0)
+          , ... ]
+          
+       = [ d(a_0 `op` a_1)/d(a_0) + d(a_0 `op` a_1)/d(a_1)
+          , let u = a_0 `op` a_1
+            in d(a_2 `op` u)/da_2 + d(a_2 `op` u)/du * xs'[0]
+          , ... ]
 
 ## Implementation
 
@@ -196,6 +223,16 @@ as before, but we also have
     |v| += |xs[i]| * d(body(a[i]))/d(v)
 
 where `v` is a free variable in `body(a[i])`, for *each* `i`. 
+
+### Reduce
+
+Consider
+
+    x = reduce op e as = a_0 `op` (a_1 `op` ( ... (a_{n-2} `op` a_{n-1} ) ... ))
+    
+Each variable in the resulting reduction will have an adjoint contribution:
+
+    |a_i| += |xs[i]| * dx/d(a_i)
 
 #### Efficient adjoint updating
 

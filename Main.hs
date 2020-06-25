@@ -72,8 +72,8 @@ commands :: [(String, (Command, String))]
 commands = sortOn fst
            [ ("fwd", (grad fwdPass, ""))
            , ("rev", (grad revPass, ""))
-           , ("fwd-python", (mkPython fwdPass, ""))
-           , ("rev-python", (mkPython revPass, ""))
+           --, ("fwd-python", (mkPython fwdPass, ""))
+           --, ("rev-python", (mkPython revPass, ""))
            ]
 
 mkPython :: Pass SOACS SOACS -> String -> [String] -> IO ()
