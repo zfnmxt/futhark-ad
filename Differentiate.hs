@@ -13,7 +13,7 @@ module Differentiate where
 import           Control.Category                          ((>>>))
 import           Control.Monad
 import           Control.Monad.Reader
-import           Control.Monad.State
+import           Control.Monad.State.Strict
 import           Data.Data
 import           Data.Functor.Identity
 import           Data.List                                 (sortOn, isPrefixOf)
@@ -56,6 +56,7 @@ import           Futhark.IR.SOACS
 import           Futhark.Util
 import           Futhark.Util.Options
 import           Futhark.Util.Pretty                       (pretty)
+
 
 deriving instance Data BinOp
 deriving instance Data Overflow
@@ -119,6 +120,7 @@ adjVName :: VName -> ADM VName
 adjVName v = do
   vbar <- newVName (baseString v <> "_adj")
   modify $ \env -> env { adjs = M.insert v vbar (adjs env) }
+  env <- get
   return vbar
 
 accVName :: VName -> ADM VName
@@ -240,8 +242,7 @@ instance Adjoint VName where
    maybeAdj <- gets $ M.lookup v . adjs
    case maybeAdj of
         Just v' -> return v'
-        Nothing -> --adjVName v -- error $ "oops: " ++ show v
-          error $ "oops: " ++ show v
+        Nothing ->  error $ "oops: " ++ show v
   --(+=) v se = do
   --  maybeV' <- gets $ M.lookup v . adjs
   --  case maybeV' of
@@ -276,6 +277,11 @@ instance Adjoint SubExp where
   
   insAdj Constant{} vbar = return ()
   insAdj (Var v)   vbar = insAdj v vbar
+  
+instance Adjoint (Param decl) where
+  adjoint (Param p t) = do
+    pbar <- adjoint p
+    return $ Param pbar t
 
 revFwdStm :: Stm -> ADM Stm
 revFwdStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (DoLoop [] valPats (ForLoop v it bound []) body)) = do
@@ -307,34 +313,44 @@ mkBindEnv v = do
 getVar :: SubExp -> VName
 getVar (Var v) = v
 
---revStm :: Stm -> ADM (Stms SOACS)
---revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (BasicOp (SubExp se))) = do
---  s1 <- mkAdjoint pat
---  pbar <- adjoint p
---  sebar <- adjoint se
---  benv <- mkBEnv se
---  (sebar', s2) <- runADBind benv $ getVar <$> (sebar +^ Var pbar)
---  insAdj se sebar'
---  return $ s1 <> s2
---
---revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (BasicOp (UnOp op se))) =
---  mkAdjoint pat
---
---revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (DoLoop [] valPats (ForLoop v it bound []) body)) = do
---  ps <- lookupAcc p
---  s1 <- mkAdjoint pat
---  let Body decs stms [res] = body
---      acc = Index ps [DimSlice (Var v) (Constant $ IntValue $ intValue it 1) (Constant $ IntValue $ intValue it 1)]
---  bindAcc <- runBinderT'_ $ letBind (Pattern [] [pat]) (BasicOp acc)
---  res_bar <- adjoint res
---  pbar <- adjoint p
---  stms' <- revStms stms
---  let body' = Body decs (s1 <> bindAcc <> stms') [res_bar]
---  --return $ oneStm (Let (Pattern [] [PatElem pbar (Prim t)]) aux (DoLoop [] valPats (ForLoop v it bound []) body'))
---  error $ pretty $ oneStm (Let (Pattern [] [PatElem pbar (Prim t)]) aux (DoLoop [] valPats (ForLoop v it bound []) body'))
---
---revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux cOp@(BasicOp CmpOp{})) =
---  mkAdjoint pat
+exts (Prim t) = Prim t
+exts (Mem s) = Mem s
+exts _ = error "oops"
+
+revStm :: Stm -> ADM (Stms SOACS, Stms SOACS)
+revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (BasicOp (SubExp se))) = do
+  s1 <- mkAdjoint pat
+  pbar <- adjoint p
+  sebar <- adjoint se
+  benv <- mkBEnv se
+  (sebar', s2) <- runADBind benv $ getVar <$> (sebar +^ Var pbar)
+  insAdj se sebar'
+  return (s2, s1)
+
+revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (BasicOp (UnOp op se))) = do
+  s1 <- mkAdjoint pat
+  return (mempty, s1)
+
+revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (DoLoop [] [(accP@(Param acc acct), (Var x))] (ForLoop v it bound []) body@(Body decs stms [res]))) = do
+  s1 <- mkAdjoint pat
+  p_bar <- adjoint p
+  ps <- lookupAcc p
+  resetAccBar <- mkAdjointParam accP
+  accP_bar <- adjoint accP
+  x_bar <- adjoint x
+  x_t <- lookupType x
+  --let valPats' = [(Param acc acct, Constant $ IntValue $ intValue it 1), (Param x_bar (toDecl x_t Nonunique), Var x_bar)]
+  let valPats' = [(accP_bar, Constant $ IntValue $ intValue it 1)]
+      currAcc   = Index ps [DimSlice (Var v) (Constant $ IntValue $ intValue it 1) (Constant $ IntValue $ intValue it 1)]
+  bindAcc <- runBinderT'_ $ letBind (Pattern [] [PatElem acc (fromDecl acct)]) (BasicOp currAcc)
+  (stms', initAdjs) <- revStms stms
+  res_bar <- adjoint res
+  let body' = Body decs (initAdjs <> bindAcc <> stms') [res_bar]
+  return $ (oneStm (Let (Pattern [] [PatElem p_bar (Prim t)]) aux (DoLoop [] valPats' (ForLoop v it bound []) body')), s1 <> resetAccBar)
+
+revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux cOp@(BasicOp CmpOp{})) = do
+  s1 <- mkAdjoint pat
+  return (mempty, s1)
 
 revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (BasicOp (BinOp op x y))) = do
   s1 <- mkAdjoint pat
@@ -362,7 +378,6 @@ revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (BasicOp (BinOp op x
          insAdj x xbar'
          insAdj y ybar'
          return $ (s2 <> s3, s1)
-         
 ----    op | op' `elem` ["UDiv", "SDiv", "FDiv"] ->
 ----      runADBind_ (bindEnv op) $ do
 ----        x1 <- x' *^ y
@@ -391,12 +406,17 @@ revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (BasicOp (BinOp op x
 revStm stm = error $ "unsupported stm: " ++ pretty stm ++ "\n\n\n" ++ show stm
 
 revStms :: Stms SOACS -> ADM (Stms SOACS, Stms SOACS)
-revStms (stms :|> stm) = (\(a, b) (a', b') -> (a <> a', b <> b')) <$> revStms stms <*> (revFwdStm stm >> revStm stm)
+revStms (stm :<| stms) =
+ do
+  revFwdStm stm
+  (stm', initAdj) <- revStm stm
+  (stms', initAdjs) <-revStms stms
+  return (stm' <> stms', initAdj <> initAdjs)
 revStms mempty = return (mempty, mempty)
 
 -- TODO: fix
 revBody :: Body -> ADM Body
-revBody (Body desc stms res) = do
+revBody b@(Body desc stms res) = do
   (stms', adjInits) <- revStms stms
   return $ Body desc (adjInits <> stms') res
 
@@ -666,7 +686,7 @@ revFun consts fundef = do
     (Body attr stms _) <- revBody $ funDefBody fundef
     resAdjs <- inScopeOf st $ mapM (\(Var v) -> do t <- lookupType v; v' <- adjoint v; return $ Param v' (toDecl t Nonunique)) res
     res' <- mapM (\(Param p _) -> Var <$> adjoint p) $ funDefParams fundef
-    return $ fundef { funDefParams = funDefParams fundef ++ resAdjs
+    error $ pretty $ fundef { funDefParams = funDefParams fundef ++ resAdjs
                     , funDefBody = Body attr (paramAdjoints <> stms) res'
                     , funDefRetType = ret --funDefRetType fundef -- concatMap (replicate (length params + 0)) $ funDefRetType fundef -- ridiculous, fix
                     , funDefEntryPoint = (\(a, r) -> (a, concat (replicate (length params + 1) r))) <$> (funDefEntryPoint fundef)
@@ -677,9 +697,6 @@ revFun consts fundef = do
            --             (FloatType ft) -> FloatEnv ft
            --    ses = map (Ext . mkConst benv) i
            --in Array t (Shape ses) u
-       exts (Prim t) = Prim t
-       exts (Mem s) = Mem s
-       exts _ = error "oops"
       
 revPass :: Pass SOACS SOACS
 revPass =
