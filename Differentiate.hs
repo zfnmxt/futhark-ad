@@ -102,10 +102,11 @@ instance HasScope SOACS ADM where
 instance LocalScope SOACS ADM where
   localScope scope = local $ \env -> env { envScope = scope <> envScope env }
   
-runADBind :: BindEnv -> ADBind a -> ADM (Stms SOACS)
-runADBind env m = (runBinder_ . (flip runReaderT) env) m
+runADBind :: BindEnv -> ADBind a -> ADM (a, Stms SOACS)
+runADBind env m = (runBinder . (flip runReaderT) env) m
 
-runADBind' = runADBind defEnv
+runADBind_ :: BindEnv -> ADBind a -> ADM (Stms SOACS)
+runADBind_ env m = snd <$> runADBind env m
 
 runADM :: MonadFreshNames m => ADM a -> REnv -> m a
 runADM (ADM m) renv =
@@ -115,7 +116,10 @@ tanVName :: VName -> ADM VName
 tanVName v = newVName (baseString v <> "_tan")
 
 adjVName :: VName -> ADM VName
-adjVName v = newVName (baseString v <> "_adj")
+adjVName v = do
+  vbar <- newVName (baseString v <> "_adj")
+  modify $ \env -> env { adjs = M.insert v vbar (adjs env) }
+  return vbar
 
 accVName :: VName -> ADM VName
 accVName v = newVName (baseString v <> "_acc")
@@ -135,8 +139,18 @@ insTape v acc = modify $ \env -> env { tape = M.insert v acc (tape env) }
 
 mkAdjoint :: (PatElemT Type) -> ADM (Stms SOACS)
 mkAdjoint pat@(PatElem p (Prim t)) = do
-   p' <- adjVName p
-   runBinderT'_ $ letBindNames [p'] (BasicOp (SubExp (constant (blankPrimValue t))))
+  p' <- adjVName p
+  if "res"  `isPrefixOf` baseString p -- Big yikes, fix!
+    then
+      let benv = case t of
+                   (IntType it)   -> IntEnv it OverflowWrap
+                   (FloatType ft) -> FloatEnv ft
+      in return mempty --runBinderT'_ $ letBindNames [p'] $ BasicOp $ SubExp $ mkConst benv 1 
+    else runBinderT'_ $ letBindNames [p'] (BasicOp (SubExp (constant (blankPrimValue t))))
+
+mkAdjointParam pat@(Param p (Prim t)) = do
+  p' <- adjVName p
+  runBinderT'_ $ letBindNames [p'] (BasicOp (SubExp (constant (blankPrimValue t))))
    
 --insAdjoint :: (PatElemT Type) -> ADBind (Stms SOACS)
 --insAdjoint pat@(PatElem p (Prim t)) = do
@@ -219,13 +233,15 @@ class Adjoint a where
   adjoint :: a -> ADM a
  -- (+=) :: a -> SubExp -> ADBind SubExp -- ADM (Stms SOACS)
   mkBEnv :: a -> ADM (BindEnv)
+  insAdj :: a -> VName -> ADM ()
 
 instance Adjoint VName where
   adjoint v = do
    maybeAdj <- gets $ M.lookup v . adjs
    case maybeAdj of
         Just v' -> return v'
-        Nothing -> error "oops"
+        Nothing -> --adjVName v -- error $ "oops: " ++ show v
+          error $ "oops: " ++ show v
   --(+=) v se = do
   --  maybeV' <- gets $ M.lookup v . adjs
   --  case maybeV' of
@@ -235,7 +251,7 @@ instance Adjoint VName where
   --      let numEnv = case t of
   --           (Prim (IntType it)) -> IntEnv it OverflowWrap
   --           (Prim (FloatType ft)) -> FloatEnv ft
-  --      runADBind numEnv $ Var v' +^ se
+  --      runADBind_ numEnv $ Var v' +^ se
   --(+=) v' se = Var v' +^ se
       
   mkBEnv v = do
@@ -248,6 +264,8 @@ instance Adjoint VName where
              (Prim (IntType it)) ->   IntEnv it OverflowWrap
              (Prim (FloatType ft)) -> FloatEnv ft
         return numEnv
+        
+  insAdj v vbar = modify $ \env -> env { tape = M.insert v vbar (adjs env) }
 
 instance Adjoint SubExp where
   adjoint (Constant c) = zeroTan $ Prim $ primValueType c
@@ -255,6 +273,9 @@ instance Adjoint SubExp where
 
   mkBEnv Constant{} = return defEnv
   mkBEnv (Var v)    = mkBEnv v
+  
+  insAdj Constant{} vbar = return ()
+  insAdj (Var v)   vbar = insAdj v vbar
 
 revFwdStm :: Stm -> ADM Stm
 revFwdStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (DoLoop [] valPats (ForLoop v it bound []) body)) = do
@@ -283,58 +304,67 @@ mkBindEnv v = do
     (Prim (IntType it)) -> IntEnv it OverflowWrap
     (Prim (FloatType ft)) -> FloatEnv ft
 
-revStm :: Stm -> ADM (Stms SOACS)
-revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (BasicOp (SubExp se))) = do
-  s1 <- mkAdjoint pat
-  pbar <- adjoint p
-  sebar <- adjoint se
-  benv <- mkBEnv se
-  s2 <- runADBind benv $ sebar +^ Var pbar
-  return $ s1 <> s2
+getVar :: SubExp -> VName
+getVar (Var v) = v
 
+--revStm :: Stm -> ADM (Stms SOACS)
+--revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (BasicOp (SubExp se))) = do
+--  s1 <- mkAdjoint pat
+--  pbar <- adjoint p
+--  sebar <- adjoint se
+--  benv <- mkBEnv se
+--  (sebar', s2) <- runADBind benv $ getVar <$> (sebar +^ Var pbar)
+--  insAdj se sebar'
+--  return $ s1 <> s2
+--
 --revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (BasicOp (UnOp op se))) =
 --  mkAdjoint pat
-
+--
 --revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (DoLoop [] valPats (ForLoop v it bound []) body)) = do
 --  ps <- lookupAcc p
+--  s1 <- mkAdjoint pat
 --  let Body decs stms [res] = body
 --      acc = Index ps [DimSlice (Var v) (Constant $ IntValue $ intValue it 1) (Constant $ IntValue $ intValue it 1)]
 --  bindAcc <- runBinderT'_ $ letBind (Pattern [] [pat]) (BasicOp acc)
---  body' <- revStms stms
 --  res_bar <- adjoint res
 --  pbar <- adjoint p
 --  stms' <- revStms stms
---  let body' = Body decs (bindAcc <> stms') [res_bar]
---  return $ oneStm (Let (Pattern [] [PatElem pbar (Prim t)]) aux (DoLoop [] valPats (ForLoop v it bound []) body'))
-
+--  let body' = Body decs (s1 <> bindAcc <> stms') [res_bar]
+--  --return $ oneStm (Let (Pattern [] [PatElem pbar (Prim t)]) aux (DoLoop [] valPats (ForLoop v it bound []) body'))
+--  error $ pretty $ oneStm (Let (Pattern [] [PatElem pbar (Prim t)]) aux (DoLoop [] valPats (ForLoop v it bound []) body'))
+--
 --revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux cOp@(BasicOp CmpOp{})) =
 --  mkAdjoint pat
---
---revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (BasicOp (BinOp op x y))) = do
---  s1 <- mkAdjoint pat
---  pbar <- adjoint p
---  xbar <- adjoint x
---  ybar <- adjoint y
---  case op of
---    op | op' `elem` ["Add", "FAdd"] -> do
---         s2 <- xbar += Var pbar
---         s3 <- ybar += Var pbar
---         return $ s1 <> s2 <> s3
---
---    op | op' `elem` ["Sub", "FSub"] -> do
---         s1 <- runADBind (bindEnv op) $ do y0 <- mkConstM 0; y0 -^ pbar; ybar + pbar
---         s2 <- xbar += Var pbar
---         return $ s1 <> s2
 
---    op | op' `elem` ["Mul", "FMul"] ->
---         runADBind (bindEnv op) $ do
---           x1 <- x' *^ y
---           x2 <- y' *^ x
---           p' x1
---           p' x2
+revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (BasicOp (BinOp op x y))) = do
+  s1 <- mkAdjoint pat
+  pbar <- adjoint p
+  xbar <- adjoint x
+  ybar <- adjoint y
+  case op of
+    op | op' `elem` ["Add", "FAdd"] -> do
+         (xbar', s2) <- runADBind (bindEnv op) $ getVar <$> xbar +^ Var pbar
+         (ybar', s3) <- runADBind (bindEnv op) $ getVar <$> ybar +^ Var pbar
+         insAdj x xbar'
+         insAdj y ybar'
+         return $ (s2 <> s3, s1)
+
+    op | op' `elem` ["Sub", "FSub"] -> do
+         (ybar', s2) <- runADBind (bindEnv op) $ getVar <$> (do y0 <- mkConstM 0; y1 <- y0 -^ Var pbar; ybar +^ y1)
+         (xbar', s3) <- runADBind (bindEnv op) $ getVar <$> xbar +^ Var pbar
+         insAdj x xbar'
+         insAdj y ybar'
+         return $ (s2 <> s3, s1)
+
+    op | op' `elem` ["Mul", "FMul"] -> do
+         (xbar', s2) <- runADBind (bindEnv op) $ getVar <$> (do x0 <- (Var pbar) *^ y; xbar +^ x0)
+         (ybar', s3) <- runADBind (bindEnv op) $ getVar <$> (do y0 <- (Var pbar) *^ x; xbar +^ y0)
+         insAdj x xbar'
+         insAdj y ybar'
+         return $ (s2 <> s3, s1)
          
 ----    op | op' `elem` ["UDiv", "SDiv", "FDiv"] ->
-----      runADBind (bindEnv op) $ do
+----      runADBind_ (bindEnv op) $ do
 ----        x1 <- x' *^ y
 ----        x2 <- x *^ y'
 ----        x3 <- x1 -^ x2
@@ -343,7 +373,7 @@ revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (BasicOp (SubExp se)
 ----        bindTans pes' x5
 ----        
 ----    op | op' `elem` ["Pow", "FPow"] ->
-----       runADBind (bindEnv op) $ do
+----       runADBind_ (bindEnv op) $ do
 ----         x0 <- mkConstM 1
 ----         x1 <- y -^ x0         -- x1 = y - 1
 ----         x2 <- x **^ x1        -- x2 = x^x1 = x^{y - 1}
@@ -356,19 +386,19 @@ revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux (BasicOp (SubExp se)
 ----         x9 <- x4 +^ x8        -- x9 = x x^{y - 1} x' + x^y ln(x) y'
 ----         bindTans pes' x9
 ----  m $ TanStm (oneStm stm) stms
---  where op' = showConstr $ toConstr op
+  where op' = showConstr $ toConstr op
 
 revStm stm = error $ "unsupported stm: " ++ pretty stm ++ "\n\n\n" ++ show stm
 
-revStms :: Stms SOACS -> ADM (Stms SOACS)
-revStms (stms :|> stm) = mappend <$> revStms stms <*> (revFwdStm stm >> revStm stm)
-revStms mempty = return mempty
+revStms :: Stms SOACS -> ADM (Stms SOACS, Stms SOACS)
+revStms (stms :|> stm) = (\(a, b) (a', b') -> (a <> a', b <> b')) <$> revStms stms <*> (revFwdStm stm >> revStm stm)
+revStms mempty = return (mempty, mempty)
 
 -- TODO: fix
 revBody :: Body -> ADM Body
 revBody (Body desc stms res) = do
-  stms' <- revStms stms
-  return $ Body desc stms' res
+  (stms', adjInits) <- revStms stms
+  return $ Body desc (adjInits <> stms') res
 
 ($^) :: String -> SubExp -> ADBind SubExp
 ($^) f x = lift $ letSubExp "f x" $ Apply (nameFromString f) [(x, Observe)] [primRetType rt] (Safe, noLoc, mempty)
@@ -380,7 +410,7 @@ revBody (Body desc stms res) = do
   let op = case numEnv of
              IntEnv it ovf -> Add it ovf
              FloatEnv ft -> FAdd ft
-  lift $ letSubExp (pretty x ++ "+^" ++ pretty y) $ BasicOp (BinOp op x y)
+  lift $ letSubExp "+^" $ BasicOp (BinOp op x y)
   
 (-^) :: SubExp -> SubExp -> ADBind SubExp
 (-^) x y = do
@@ -388,7 +418,7 @@ revBody (Body desc stms res) = do
   let op = case numEnv of
              IntEnv it ovf -> Sub it ovf
              FloatEnv ft -> FSub ft
-  lift $ letSubExp (pretty x ++ "-^" ++ pretty y) $ BasicOp (BinOp op x y)
+  lift $ letSubExp "-^" $ BasicOp (BinOp op x y)
 
 (*^) :: SubExp -> SubExp -> ADBind SubExp
 (*^) x y = do
@@ -396,7 +426,7 @@ revBody (Body desc stms res) = do
   let op = case numEnv of
              IntEnv it ovf -> Mul it ovf
              FloatEnv ft -> FMul ft
-  lift $ letSubExp (pretty x ++ "*^" ++ pretty y) $ BasicOp (BinOp op x y)
+  lift $ letSubExp "*^" $ BasicOp (BinOp op x y)
       
 (//^) :: SubExp -> SubExp -> ADBind SubExp
 (//^) x y = do
@@ -404,7 +434,7 @@ revBody (Body desc stms res) = do
   let op = case numEnv of
              IntEnv it _ -> SDiv it
              FloatEnv ft -> FDiv ft
-  lift $ letSubExp (pretty x ++ "//^" ++ pretty y) $ BasicOp (BinOp op x y)
+  lift $ letSubExp "//^" $ BasicOp (BinOp op x y)
 
 (**^) :: SubExp -> SubExp -> ADBind SubExp
 (**^) x y = do
@@ -412,7 +442,7 @@ revBody (Body desc stms res) = do
   let op = case numEnv of
              IntEnv it _ -> Pow it
              FloatEnv ft -> FPow ft
-  lift $ letSubExp (pretty x ++ "**^" ++ pretty y) $ BasicOp (BinOp op x y)
+  lift $ letSubExp "**^" $ BasicOp (BinOp op x y)
 
 bindTans :: [PatElem] -> SubExp -> ADBind ()
 bindTans pes' se = do
@@ -464,24 +494,24 @@ fwdStm stm@(Let (Pattern [] pes) aux (BasicOp (BinOp op x y))) m = do
   withTans pes $ \pes' -> do
     stms <- case op of
       op | op' `elem` ["Add", "FAdd"] ->
-        runADBind (bindEnv op)  $ do
+        runADBind_ (bindEnv op)  $ do
           x1 <- x' +^ y'
           bindTans pes' x1
 
       op | op' `elem` ["Sub", "FSub"] -> 
-        runADBind (bindEnv op) $ do
+        runADBind_ (bindEnv op) $ do
           x1 <- x' -^ y'
           bindTans pes' x1
 
       op | op' `elem` ["Mul", "FMul"] ->
-        runADBind (bindEnv op) $ do
+        runADBind_ (bindEnv op) $ do
           x1 <- x' *^ y
           x2 <- x *^ y'
           x3 <- x1 +^ x2
           bindTans pes' x3
 
       op | op' `elem` ["UDiv", "SDiv", "FDiv"] ->
-        runADBind (bindEnv op) $ do
+        runADBind_ (bindEnv op) $ do
           x1 <- x' *^ y
           x2 <- x *^ y'
           x3 <- x1 -^ x2
@@ -490,7 +520,7 @@ fwdStm stm@(Let (Pattern [] pes) aux (BasicOp (BinOp op x y))) m = do
           bindTans pes' x5
           
       op | op' `elem` ["Pow", "FPow"] ->
-         runADBind (bindEnv op) $ do
+         runADBind_ (bindEnv op) $ do
            x0 <- mkConstM 1
            x1 <- y -^ x0         -- x1 = y - 1
            x2 <- x **^ x1        -- x2 = x^x1 = x^{y - 1}
@@ -628,16 +658,28 @@ fwdPass =
 revFun :: Stms SOACS -> FunDef SOACS -> PassM (FunDef SOACS)
 revFun consts fundef = do
   let initial_renv = REnv { tans = mempty, envScope = mempty }
-  flip runADM initial_renv $ inScopeOf consts $ inScopeOf fundef $
-    withTans (funDefParams fundef) $ \params' -> do
+  flip runADM initial_renv $ inScopeOf consts $ inScopeOf fundef $ do
     let params = funDefParams fundef
-    (Body attr stms res) <- revBody $ funDefBody fundef
-    -- let rts = funDefRetType fundef ++ map paramAttr params
-    return $ fundef { funDefParams = funDefParams fundef -- ++ resVNames
-                  , funDefBody = Body attr stms res
-                  , funDefRetType = concatMap (replicate (length params + 0)) $ funDefRetType fundef -- ridiculous, fix
-                  , funDefEntryPoint = (\(a, r) -> (a, concat (replicate (length params + 1) r))) <$> (funDefEntryPoint fundef)
-                  }
+        ret = map (\(Param _ t) -> exts t) params
+    paramAdjoints <- foldM (\stms p -> do stms' <- mkAdjointParam p; return (stms' <> stms)) mempty params
+    let (Body _ st res) = funDefBody fundef
+    (Body attr stms _) <- revBody $ funDefBody fundef
+    resAdjs <- inScopeOf st $ mapM (\(Var v) -> do t <- lookupType v; v' <- adjoint v; return $ Param v' (toDecl t Nonunique)) res
+    res' <- mapM (\(Param p _) -> Var <$> adjoint p) $ funDefParams fundef
+    return $ fundef { funDefParams = funDefParams fundef ++ resAdjs
+                    , funDefBody = Body attr (paramAdjoints <> stms) res'
+                    , funDefRetType = ret --funDefRetType fundef -- concatMap (replicate (length params + 0)) $ funDefRetType fundef -- ridiculous, fix
+                    , funDefEntryPoint = (\(a, r) -> (a, concat (replicate (length params + 1) r))) <$> (funDefEntryPoint fundef)
+                    }
+ where --exts (Array t (Shape i) u) ty =
+           --let benv = case ty of
+           --             (IntType it)   -> IntEnv it OverflowWrap
+           --             (FloatType ft) -> FloatEnv ft
+           --    ses = map (Ext . mkConst benv) i
+           --in Array t (Shape ses) u
+       exts (Prim t) = Prim t
+       exts (Mem s) = Mem s
+       exts _ = error "oops"
       
 revPass :: Pass SOACS SOACS
 revPass =
