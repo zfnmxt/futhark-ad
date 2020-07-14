@@ -1,0 +1,16 @@
+cabal-version:       >=1.10
+
+name:                futhark-ad
+version:             0.1.0.0
+license-file:        LICENSE
+author:              Troels Henriksen, Robert Schenck
+maintainer:          athas@sigkill.dk, zfnmxt@zfnmxt.com
+build-type:          Simple
+extra-source-files:  CHANGELOG.md
+
+executable futhark-ad
+  main-is:             Main.hs
+  build-depends:       base >=4.13, containers, mtl, futhark >= 0.15.7, srcloc, filepath, directory, text, transformers
+  other-modules:       Differentiate
+  default-language:    Haskell2010
+  other-modules:       Differentiate

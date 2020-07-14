@@ -1,0 +1,100 @@
+let main (x: i32) = loop acc1 = x for i < 3 do
+		      loop acc2 = 0 for j < i do
+			acc2 + x
+
+
+--Warning at test12.fut:2:45-45:
+--  Defaulting ambiguous type to i32.
+--futhark-ad: entry {i32} main (i32 x_7, i32 res_adj_14) = {
+--  let {i32 bound_17} = add32(3i32, 1i32)
+--  let {[3i32]i32 empty_acc_18} = scratch(i32, 3i32)
+--  let {i32 res_8, [3i32]i32 res_acc_15} =
+--    loop {i32 acc1_9, *[3i32]i32 acc1_acc_16} = {x_7, empty_acc_18}
+--    for i_10:i32 < 3i32 do {
+--      let {bool less_than_zero_19} = slt32(i_10, 0i32)
+--      let {bool greater_than_size_20} = sle32(3i32, i_10)
+--      let {bool outside_bounds_dim_21} =
+--        logor(less_than_zero_19, greater_than_size_20)
+--      let {bool outside_bounds_22} = logor(outside_bounds_dim_21, false)
+--      let {[3i32]i32 update_acc_24} =
+--        -- Branch returns: {[3i32]i32}
+--        if outside_bounds_22
+--        then {acc1_acc_16} else {
+--          let {[3i32]i32 write_out_inside_bounds_23} =
+--            acc1_acc_16 with [i_10] <- acc1_9
+--          in {write_out_inside_bounds_23}
+--        }
+--      let {i32 y_13} = mul32(x_7, i_10)
+--      in {y_13, update_acc_24}
+--    }
+--  let {i32 bound_42} = sub32(3i32, 1i32)
+--  let {i32 reset_29} = 0i32
+--  let {i32 x_adj_30} = 0i32
+--  let {i32 i_adj_31} = 0i32
+--  let {i32 acc1_adj_res_41, i32 +^_res_39, i32 +^_res_40} =
+--    loop {i32 acc1_adj_28, i32 y_adj_34, i32 x_adj_32,
+--          i32 i_adj_33} = {reset_29, res_adj_14, x_adj_30, i_adj_31}
+--    for i_26:i32 < 3i32 do {
+--      let {i32 idx_43} = sub32(bound_42, i_26)
+--      let {i32 acc1_25} = res_acc_15[idx_43]
+--      let {i32 *^_35} = mul32(y_adj_34, i_26)
+--      let {i32 *^_36} = mul32(y_adj_34, x_7)
+--      let {i32 +^_37} = add32(x_adj_32, *^_35)
+--      let {i32 +^_38} = add32(i_adj_33, *^_36)
+--      in {reset_29, +^_37, +^_38}
+--    }
+--  in {}
+--}
+
+
+
+--futhark-ad: let {i32 res_8} =
+--  loop {i32 acc1_25} = {x_7}
+--  for i_26:i32 < 3i32 do {
+--    let {i32 y_27} = mul32(x_7, i_26)
+--    in {y_27}
+--  }
+
+--Warning at test12.fut:2:45-45:
+--  Defaulting ambiguous type to i32.
+--futhark-ad: entry {i32} main (i32 x_7, i32 res_adj_14) = {
+--  let {i32 bound_17} = add32(3i32, 1i32)
+--  let {[3i32]i32 empty_acc_18} = scratch(i32, 3i32)
+--  let {i32 res_8, [3i32]i32 res_acc_15} =
+--    loop {i32 acc1_9, *[3i32]i32 acc1_acc_16} = {x_7, empty_acc_18}
+--    for i_10:i32 < 3i32 do {
+--      let {bool less_than_zero_19} = slt32(i_10, 0i32)
+--      let {bool greater_than_size_20} = sle32(3i32, i_10)
+--      let {bool outside_bounds_dim_21} =
+--        logor(less_than_zero_19, greater_than_size_20)
+--      let {bool outside_bounds_22} = logor(outside_bounds_dim_21, false)
+--      let {[3i32]i32 update_acc_24} =
+--        -- Branch returns: {[3i32]i32}
+--        if outside_bounds_22
+--        then {acc1_acc_16} else {
+--          let {[3i32]i32 write_out_inside_bounds_23} =
+--            acc1_acc_16 with [i_10] <- acc1_9
+--          in {write_out_inside_bounds_23}
+--        }
+--      let {i32 y_13} = mul32(x_7, i_10)
+--      in {y_13, update_acc_24}
+--    }
+--  let {i32 bound_43} = sub32(3i32, 1i32)
+--  let {i32 reset_29} = 0i32
+--  let {i32 x_adj_30} = 0i32
+--  let {i32 i_adj_31} = 0i32
+--  let {i32 acc1_adj_res_39, i32 y_adj_res_40, i32 +^_res_41, i32 +^_res_42} =
+--    loop {i32 acc1_adj_28, i32 y_adj_34, i32 x_adj_32,
+--          i32 i_adj_33} = {reset_29, res_adj_14, x_adj_30, i_adj_31}
+--    for i_26:i32 < 3i32 do {
+--      let {i32 idx_44} = sub32(bound_43, i_26)
+--      let {i32 acc1_25} = res_acc_15[idx_44]
+--      let {i32 *^_35} = mul32(y_adj_34, i_26)
+--      let {i32 *^_36} = mul32(y_adj_34, x_7)
+--      let {i32 +^_37} = add32(x_adj_32, *^_35)
+--      let {i32 +^_38} = add32(i_adj_33, *^_36)
+--      in {reset_29, acc1_adj_28, +^_37, +^_38}
+--    }
+--  let {i32 +^_45} = add32(+^_res_41, y_adj_res_40)
+--  in {+^_45}
+--}
