@@ -459,9 +459,9 @@ revStm stm@(Let _ _ (DoLoop _ _ ForLoop{} _)) = do
                         return $ PatElem _p t
    _ -> undefined
 
-revStm stm@(Let (Pattern [] [pat@(PatElem p (Prim t))]) aux cOp@(BasicOp CmpOp{})) = do
-  (_, s1) <- mkAdjoint pat
-  return (mempty, s1)
+revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux cOp@(BasicOp CmpOp{})) = do
+  (_, us1, s1) <- inScopeOf (p, LParamName t) $ lookupAdj p
+  return (us1, s1)
 
 revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (BinOp op (Var x) (Var y)))) = do
   (_p, us1, s1) <- inScopeOf (p, LParamName t) $ lookupAdj $ patElemName pat
