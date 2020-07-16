@@ -26,7 +26,7 @@
   \id{op} & ::= & \Transpose ~~|~~ \Rearrange~\Par{d,\cdots{},d} ~~|~~ \Replicate \\
   \id{soac} & ::= & \Map ~~|~~ \Reduce ~~|~~ \Scan ~~|~~ \Redomap ~~|~~ \Scanomap\\
   e & ::= & x ~~|~~ d ~~|~~ b ~~|~~ \Par{e,\cdots{},e} ~~|~~ e\SqPar{e} ~~|~~ e~\id{bop}~e
-      ~~|~~ \id{op}~e~\cdots{}~e \\
+      ~~|~~ \id{op}~e~\cdots{}~e ~~|~~ {\mathbf 0} \\
   & |   & \Loop{x_1~\cdots{}~x_n}{e}{y}{e}{e} \\
     & |   & \LoopR{x_1~\cdots{}~x_n}{e}{y}{e}{e} \\
     & |   & \Let{x_1~\cdots{}~x_n}{e}{e} ~~|~~ \If{e}{e}{e} \\
@@ -57,18 +57,18 @@ We define \emph{tape maps} ($\parallel \Omega$) and \emph{adjoint contexts} $(\L
   x_{s_0} = \Replicate~e_n~{\mathbf 0}
 }
 {
- e \Rightarrow_{F}  \ctx{\Loop{(\seq{x}, x_{s})}{(e_0, x_{s_0})}{y}{e_{n}}{(e_{body}, x_s[y] = \seq{x})}}{(x \mapsto x_{s_0})}
+ e \Rightarrow_{F}  \ctx{\Loop{(\seq{x}, x_{s})}{(e_0, x_{s_0})}{y}{e_{n}}{(e_{body}, x_s[y] = \seq{x})}}{(\seq{x} \mapsto x_{s})}
 }
 
-\inferrule* [right=FwdIFE]
-{
-  \If{e_p}{e_t}{e_f}
-  e_t \Rightarrow_F \ctx{e_t'}{\Omega_t}
-  e_f \Rightarrow_F \ctx{e_f'}{\Omega_f}
-}
-{
-  \If{e_p}{e_t}{e_f} \Rightarrow_F \ctx{\If{e_p}{e_t'}{e_f'}}{\Omega_t \cup \Omega_f}
-}
+%\inferrule* [right=FwdIF]
+%{
+%  \If{e_p}{e_t}{e_f}
+%  e_t \Rightarrow_F \ctx{e_t'}{\Omega_t}
+%  e_f \Rightarrow_F \ctx{e_f'}{\Omega_f}
+%}
+%{
+%  \If{e_p}{e_t}{e_f} \Rightarrow_F \ctx{\If{e_p}{e_t'}{e_f'}}{\Omega_t \cup \Omega_f}
+%}
 \end{mathpar}
 }
 \end{figure}
@@ -84,24 +84,24 @@ We define \emph{tape maps} ($\parallel \Omega$) and \emph{adjoint contexts} $(\L
   e_{loop} = \Let{\seq{lres}}{\Loop{\seq{x}}{e_0}{y}{e_n}{e_{body}}}{\seq{lres}}\\
   e_{loop} \Rightarrow_F \ctx{e_{loop}'}{\Omega} \\
   \seq{fv} = FV(e_{body}) \setminus \seq{x} \\
-  \seq{\hat{x}},~ \seq{\hat{fv}},~\seq{\hat{rs}} ~fresh \\
-  reset = \Map~(\fn\_.~\mathbf 0)~\seq{\hat{x}} \\
+  \seq{\hat{x}},~ \seq{\hat{fv}},~ \seq{\hat{fv}'},~\seq{\hat{fv}''},~\seq{\hat{rs}},~\seq{\hat{rs}'} ~fresh \\
+  \seq{reset} = \Map~(\fn\_.~\mathbf 0)~\seq{\hat{x}} \\
   \Lambda_1' = \Lambda_1,~\seq{x} \mapsto \seq{\hat{x}},~\seq{fv} \mapsto \seq{\hat{fv}},~\seq{rs} \mapsto \seq{\hat{rs}} \\
-  \hat{e}_{body} = \Let{\seq{\hat{rs}'}}{\hat{e}_{body}'}{\seq{\hat{rs}'}} \\
+  \hat{e}_{body} = \Let{\seq{\hat{z}}}{\hat{e}_{body}'}{\seq{\hat{z}}} \\
   (\ctxb{\Lambda_1'}{e_{body}}) \Lleftarrow (\ctxb{\Lambda_2}{\hat{e}_{body}}) \\
- % \Delta_{FV} = FV(e_{body}) \cap dom(\Lambda_2 \setminus \Lambda_1) \\
-  \hat{e}_{body}' = \Let{\seq{rs}}{\Omega[y]}{(\Let{\seq{\hat{rs}'}}{\hat{e}_{body}'}{(reset, \seq{\hat{rs}'}, \seq{fv}}))} \\
- % (\ctxa{\Lambda_2}{\Let{\seq{x}}{e_0}{\seq{x}}}{\varepsilon}) \Lleftarrow  (\ctxa{\Lambda_3}{\Let{\seq{\hat{x}}}{\hat{e}_0}{\seq{x}}}{\varepsilon}) \\
-  \widehat{init} = (reset,\Lambda_1[\seq{lres}], \Lambda_1[\seq{fv}]) \\
-  \hat{e}_{loop} = {\LoopR{(\seq{\hat{x}},\seq{\hat{rs}}, \seq{\hat{fv}})}{\widehat{init}}{y}{e_n - 1}{\hat{e}_{body}}}\\
-  \Lambda_3 = \Lambda_1, \seq{fv} \mapsto \seq{\hat{fv}}
+  \Lambda_{2,fv} = \{ v \mapsto \hat{v} \mid v \in \seq{fv}, (v \mapsto \hat{v}) \in \Lambda_{2} \setminus \Lambda_1'\} \\
+  \Lambda_{2,rs} = \{ r \mapsto \hat{r} \mid r \in \seq{rs}, (r \mapsto \hat{r}) \in \Lambda_{2}\} \\
+  \hat{e}_{body}'' = \Let{\seq{rs}}{\Omega[y]}{(\Let{\seq{\hat{z}'}}{\hat{e}_{body}'}{(\seq{reset}, im(\Lambda_{2,rs}), im(\Lambda_{2,fv})}))} \\
+  \widehat{init} = (\seq{reset},\Lambda_1[\seq{lres}], \Lambda_1[dom(\Lambda_{2,fv})]) \\
+  \hat{e}_{loop} = {\LoopR{(\seq{\hat{x}},\seq{\hat{rs}}, \seq{\hat{fv}})}{\widehat{init}}{y}{e_n - 1}{\hat{e}_{body}''}}\\
+  \Lambda_3 = \Lambda_1 \cup \left(dom(\Lambda_{2,fv}) \mapsto \seq{\hat{fv}''}\right)
 }
             {
                     \ctxb{\Lambda_1}{e_{loop}}
-                    \Lleftarrow \left(\ctxb{\Lambda_3}{\Let{(\seq{\hat{x}'},\seq{\hat{rs}'}, \seq{\hat{fv}'})}{\hat{e}_{loop}}{(\Let{\seq{\hat{fv}'}}{\seq{\hat{fv}} + \seq{\hat{rs}'}}{\seq{\hat{fv}'}})}}\right)\\
+                    \Lleftarrow \left(\ctxb{\Lambda_3}{\Let{(\_~,\seq{\hat{rs}'}, \seq{\hat{fv}'})}{\hat{e}_{loop}}{(\Let{\seq{\hat{fv}''}}{(\Map~(+)~\seq{\hat{fv}'}~\seq{\hat{rs}'})}{\seq{\hat{fv}''}}})}\right)\\
             }
 
-\inferrule* [right=RevIFE]
+\inferrule* [right=RevIF]
             {
   \ctxb{\Lambda}{e_t} \Lleftarrow \ctxb{\Lambda_t}{\Let{\seq{\hat{fv}}_t}{\hat{e}_t}}{\seq{\hat{fv}}_t}\\
   \ctxb{\Lambda}{e_f} \Lleftarrow \ctxb{\Lambda_f}{\Let{\seq{\hat{fv}}_f}{\hat{e}_f}}{\seq{\hat{fv}}_f}\\
