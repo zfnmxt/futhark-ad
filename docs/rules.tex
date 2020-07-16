@@ -34,6 +34,7 @@
   f & ::= & \FnU{x_1~\cdots{}~x_n}{e} ~~|~~ ~~\id{soac}~f~e~\cdots{}~e ~~|~~ e~\id{bop} ~~|~~ \id{bop}~e
 \end{array}
 \]
+The ${\mathbf 0}$ expression is an array of zeros of arbitrary (and polymorphic!) shape.
 
 \section*{Reverse-mode Rules}
 We define \emph{tape maps} ($\parallel \Omega$) and \emph{adjoint contexts} $(\Lambda \vdash)$ as
@@ -44,6 +45,38 @@ We define \emph{tape maps} ($\parallel \Omega$) and \emph{adjoint contexts} $(\L
   \Lambda ::= \varepsilon ~~|~~ \Lambda, (x \mapsto \hat{x})
 \end{array}
 \]
+The union of two maps prefers the right map in the instance of key conflicts:
+\begin{align*}
+  (\Lambda_1 \cup \Lambda_2)[x] = \begin{cases}
+                                    \Lambda_2[x] & \text{if $(x \mapsto \hat{x}) \in \Lambda_2$} \\
+                                   \Lambda_1[x] & \text{otherwise}
+                                  \end{cases}
+\end{align*}
+Mappings of lists of variables is sugar for a list of mappings:
+\begin{align*}
+  x_1 x_2 \cdots x_n \mapsto \hat{x}_1 \hat{x}_2 \cdots \hat{x_n} = \epsilon, (x_1 \mapsto \hat{x}_1), (x_2 \mapsto \hat{x}_2), \dots, (x_n \mapsto \hat{x}_n)
+\end{align*}
+$dom$ returns all keys of a map, i.e.,
+\[
+dom\left(\epsilon, (x_1 \mapsto \hat{x}_1), (x_2 \mapsto \hat{x}_2)\right)= \{x_1, x_2\}
+\]
+$im$ returns all elements:
+\[
+im\left(\epsilon, (x_1 \mapsto \hat{x}_1), (x_2 \mapsto \hat{x}_2)\right)= \{\hat{x}_1, \hat{x}_2\}
+\]
+We're sloppy and overload the notation somewhat, so expressions like
+\[
+\Let{dom\left(\epsilon, (x_1 \mapsto \hat{x}_1), (x_2 \mapsto \hat{x}_2)\right)}{e_1}{e_2}
+\]
+are to be understood as
+\[
+\Let{x_1 ~ x_2}{e_1}{e_2}
+\]
+or
+\[
+\Let{(x_1, x_2)}{e_1}{e_2}
+\]
+depending on the context.
 
 \subsection*{Forward pass ($\Rightarrow_F$)} 
 \begin{figure}[!h] 
@@ -72,8 +105,8 @@ We define \emph{tape maps} ($\parallel \Omega$) and \emph{adjoint contexts} $(\L
 \end{mathpar}
 }
 \end{figure}
-
-\subsection*{Reverse pass ($\Lleftarrow$)} 
+\newpage
+\subsection*{Reverse pass ($\Lleftarrow$)}
 \begin{figure}[!h] 
 \centering
 \fbox{
@@ -113,7 +146,7 @@ We define \emph{tape maps} ($\parallel \Omega$) and \emph{adjoint contexts} $(\L
   %\Lambda_f' = \Lambda_{\cup}\left[dom(\Lambda_{\Delta_t}) \mapsto \Lambda\left[dom(\Lambda_{\Delta t})\right]\right]\\
   \hat{e}_t' = \Let{\seq{\hat{fv}}}{sort(\seq{\hat{fv}}_t ~ \doubleplus ~ im(\Lambda_{\Delta_f} - \Lambda_{\Delta_t}))}{(\Let{\seq{\hat{fv}}_t}{\hat{e}_t}{\seq{\hat{fv}}_t})} \\
   \hat{e}_f' = \Let{\seq{\hat{fv}}}{sort(\seq{\hat{fv}}_f ~ \doubleplus ~ im(\Lambda_{\Delta_t} - \Lambda_{\Delta_f}))}{(\Let{\seq{\hat{fv}}_f}{\hat{e}_f}{\seq{\hat{fv}}_f})} \\
-  \Lambda' = \Lambda, ~dom(\Lambda_{\Delta_t} \cup \Lambda_{\Delta_f}) \mapsto \seq{\hat{fv}}
+  \Lambda' = \Lambda, ~(dom\Lambda_{\Delta_t} \cup (\Lambda_{\Delta_f}) \mapsto \seq{\hat{fv}})
 }
 {
   \ctxb{\Lambda}{\If{e_p}{e_t}{e_f}}\Lleftarrow \ctxb{\Lambda'}{\If{e_p}{\hat{e}_t'}{\hat{e}_f'}}
