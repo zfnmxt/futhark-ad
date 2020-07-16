@@ -1,0 +1,179 @@
+% Define Language
+\lstdefinelanguage{futhark}
+{
+  % list of keywords
+  morekeywords={
+    do,
+    else,
+    for,
+    fun,
+    if,
+    in,
+    include,
+    let,
+    loop,
+    struct,
+    then,
+    type,
+    val,
+    while,
+    with,
+    module,
+    where,
+  },
+  sensitive=true, % keywords are not case-sensitive
+  morecomment=[l]{--}, % l is for line comment
+  morecomment=[s]{\{-}{-\}}, % s is for start and end delimiter
+%  otherkeywords={>,<,=,<=,>=,!,*,/,-,+,|,&,||,&&,==,=>},
+  morestring=[b]" % defines that strings are enclosed in double quotes
+}
+
+\lstdefinelanguage{corefuthark}
+{
+  % list of keywords
+  morekeywords={
+    do,
+    else,
+    for,
+    fun,
+    if,
+    in,
+    include,
+    let,
+    loop,
+    struct,
+    then,
+    type,
+    val,
+    while,
+    with,
+    module,
+    where,
+  },
+  sensitive=true, % keywords are not case-sensitive
+  literate={\\}{\fn}{1} {->}{$\rightarrow$}{1} {<-}{$\leftarrow$}{1},
+  moredelim=**[is][\color{red}]{@}{@},
+  morecomment=[l]{--}, % l is for line comment
+  morecomment=[s]{\{-}{-\}}, % s is for start and end delimiter
+%  otherkeywords={>,<,=,<=,>=,!,*,/,-,+,|,&,||,&&,==,=>},
+  morestring=[b]" % defines that strings are enclosed in double quotes
+}
+
+% Define Colors
+\usepackage{xcolor}
+\definecolor{eclipseBlue}{RGB}{42,0.0,255}
+\definecolor{eclipseGreen}{RGB}{63,127,95}
+\definecolor{eclipsePurple}{RGB}{127,0,85}
+
+\newcommand{\fop}[1]{\mbox{\ttfamily\color{eclipseBlue}#1}}
+\newcommand{\fw}[1]{\mbox{\ttfamily\bfseries\color{eclipsePurple}#1}}
+
+% Set Language
+\lstset{
+  language={futhark},
+  basicstyle=\small\ttfamily, % Global Code Style
+  extendedchars=true, % Allows 256 instead of 128 ASCII characters
+  tabsize=2, % number of spaces indented when discovering a tab
+  columns=fixed, % make all characters equal width
+  keepspaces=true, % does not ignore spaces to fit width, convert tabs to spaces
+  showstringspaces=false, % lets spaces in strings appear as real spaces
+  numbers=none, % do not show line numbers at the left
+  numberstyle=\footnotesize\ttfamily, % style of the line numbers
+  commentstyle=\itshape\color{eclipseGreen}, % style of comments
+  keywordstyle=\bfseries, % style of keywords
+  stringstyle=\color{eclipseBlue}, % style of strings
+  emph=[1] {
+    false,
+    filter,
+    iota,
+    map,
+    map2,
+    map4,
+    partition,
+    rearrange,
+    reduce,
+    reduce_comm,
+    redomap,
+    scanomap,
+    replicate,
+    reshape,
+    rotate,
+    shape,
+    scan,
+    split,
+    true,
+    unzip,
+    scatter,
+    zip,
+    stream_seq,
+    stream_red,
+    stream_map,
+    stream_par,
+    size,
+    manifest,
+    local,
+    kernel,
+    stream_group,
+  },
+  emphstyle=\ttfamily\bfseries,
+  moredelim=**[is][\color{red}]{@}{@},
+  aboveskip=-0.1\baselineskip,
+  belowskip=\baselineskip,
+}
+
+\newcommand{\Dom}{{\rm Dom}}
+\newcommand{\ov}[1]{\overline{#1}}
+\newcommand{\nseq}[2]{\overline{#1}^{(#2)}}
+\newcommand{\seq}[1]{\overline{#1}}
+\newcommand{\LR}[1]{\langle #1\rangle}
+\newcommand{\hsp}{\hspace{5mm}}
+\newcommand{\kt}[1]{\textsf{#1}}
+\newcommand{\kw}[1]{\mbox{\texttt{\bf #1}}}
+\newcommand{\id}[1]{\mbox{\it{#1}}}
+\newcommand{\M}[2]{\LR{#1\in #2}}
+\newcommand{\Mv}[2]{\LR{\seq{#1}\in\seq{#2}}}
+\newcommand{\Mvv}[4]{\LR{\seq{#1}\,\seq{#2}\in\seq{#3}\,\seq{#4}}}
+\newcommand{\Do}{\kw{do}}
+\newcommand{\For}{\kw{for}}
+\newcommand{\Map}{\kw{map}}
+\newcommand{\fn}{\ensuremath{\lambda}}
+\newcommand{\Fn}[3]{\fn#2:~#1~\rightarrow #3}
+\newcommand{\FnU}[2]{\fn#1~\rightarrow #2}
+\newcommand{\Reduce}{\kw{reduce}}
+\newcommand{\Reshape}{\kw{reshape}}
+\newcommand{\Redomap}{\kw{redomap}}
+\newcommand{\Scanomap}{\kw{scanomap}}
+\newcommand{\Scan}{\kw{scan}}
+\newcommand{\Transpose}{\kw{transpose}}
+\newcommand{\Let}[3]{\kw{let}~#1~\mbox{\texttt{=}}~#2~\kw{in}~#3}
+\newcommand{\Lett}[3]{\!\begin{array}[t]{l}\kw{let}~#1~\mbox{\texttt{=}}~#2 \\\kw{in}~#3 \end{array}}
+\newcommand{\If}[3]{\kw{if}~#1~\kw{then}~#2~\kw{else}~#3}
+\newcommand{\Iff}[5]{\begin{array}[t]{l}\kw{if}~#1~\kw{then}~ #2\\\kw{else}~\kw{if}~#3~\kw{then} ~#4 \\\kw{else}~#5\end{array}}
+\newcommand{\Loop}[5]{\kw{loop}~#1~\texttt{=}~#2~\kw{for}~#3<#4~\kw{do}~#5}
+\newcommand{\Loopp}[5]{\begin{array}[t]{l}\kw{loop}~#1~\texttt{=}~#2~\kw{for}~#3<#4~\kw{do}\\\hsp #5\end{array}}
+\newcommand{\vd}{\vdash}
+\newcommand{\Rearrange}{\kw{rearrange}}
+\newcommand{\Replicate}{\kw{replicate}}
+\newcommand{\Par}[1]{\mathtt{(}#1\mathtt{)}}
+\newcommand{\SqPar}[1]{\mathtt{[}#1\mathtt{]}}
+\newcommand{\Set}[1]{\{#1\}}
+\newcommand{\StreamMap}{\kw{stream\_map}}
+\newcommand{\StreamRed}{\kw{stream\_red}}
+\newcommand{\StreamPar}{\kw{stream\_par}}
+\newcommand{\StreamSeq}{\kw{stream\_seq}}
+\newcommand{\StreamGroup}{\kw{stream\_group}}
+\newcommand{\Segmap}{\kw{segmap}}
+\newcommand{\Segred}{\kw{segred}}
+\newcommand{\Segscan}{\kw{segscan}}
+\newcommand{\sembox}[1]{\hfill \normalfont \mbox{\fbox{\(#1\)}}}
+\newcommand{\sempart}[2]{\textrm{\textit{#1 \sembox{#2}}}}
+
+\newcommand{\fract}[3]{\vspace{2mm}\mbox{$\frac{\begin{array}{c} #2 \end{array}}{\begin{array}{c} #3 \end{array}}$}~[\mbox{\textsc{#1}}]}
+\newcommand{\onepart}[1]{\noindent\hfill#1\hfill\mbox{~}}
+\newcommand{\twopart}[2]{\noindent\hfill#1\hfill#2\hfill\mbox{~}}
+\newcommand{\threepart}[3]{\noindent\hfill#1\hfill#2\hfill#3\hfill\mbox{~}}
+
+%%% Local Variables:
+%%% mode: latex
+%%% TeX-master: "icfp18"
+%%% End:

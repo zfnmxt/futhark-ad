@@ -1,0 +1,95 @@
+\documentclass[a4paper]{report}
+\usepackage{mathpartir}
+\usepackage{mathpazo}
+\usepackage{amssymb,amsthm,amsmath,amsfonts}
+\usepackage{graphicx,color}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage[shortlabels]{enumitem}
+\usepackage[margin=1.0in, marginparwidth=2in]{geometry}
+
+\input{futhark.tex}
+
+%\newcommand{\ttb}[1]{\texttt{\bf #1}}
+%\newcommand{\Loop}[5]{\ttb{loop}~#1=#2~\ttb{for}~#3<#4~\ttb{do}~#5}
+\newcommand{\ctx}[2]{#1 ~{\parallel}~ #2}
+\newcommand{\ctxa}[3]{#1 \vdash #2 ~{\parallel}~ #3}
+\newcommand{\LoopR}[5]{\kw{loop}~#1~\texttt{=}~#2~\kw{for}~#3=#4~\kw{to}~0~\kw{do}~#5}
+\newcommand{\update}[2]{#1\mathrel{+}=#2}
+
+\begin{document}
+\[
+\begin{array}{lcl}
+  \id{bop} & ::= & \kw{+} ~~|~~ \kw{-} ~~|~~ \kw{*} ~~|~~ \kw{/} ~~|~~ \kw{<} ~~|~~ \cdots \\
+  \id{op} & ::= & \Transpose ~~|~~ \Rearrange~\Par{d,\cdots{},d} ~~|~~ \Replicate \\
+  \id{soac} & ::= & \Map ~~|~~ \Reduce ~~|~~ \Scan ~~|~~ \Redomap ~~|~~ \Scanomap\\
+  e & ::= & x ~~|~~ d ~~|~~ b ~~|~~ \Par{e,\cdots{},e} ~~|~~ e\SqPar{e} ~~|~~ e~\id{bop}~e
+      ~~|~~ \id{op}~e~\cdots{}~e \\
+  & |   & \Loop{x_1~\cdots{}~x_n}{e}{y}{e}{e} \\
+    & |   & \LoopR{x_1~\cdots{}~x_n}{e}{y}{e}{e} \\
+    & |   & \Let{x_1~\cdots{}~x_n}{e}{e} ~~|~~ \If{e}{e}{e} \\
+    & |   & \id{soac} ~f~ e~\cdots{}~e \\
+  f & ::= & \FnU{x_1~\cdots{}~x_n}{e} ~~|~~ ~~\id{soac}~f~e~\cdots{}~e ~~|~~ e~\id{bop} ~~|~~ \id{bop}~e
+\end{array}
+\]
+
+\section*{Reverse-mode Rules}
+We define \emph{accumulator maps} ($\parallel \Omega$) and \emph{adjoint contexts} $(\Lambda \vdash)$ as
+
+\[
+\begin{array}{lcl}
+  \Omega ::= \varepsilon ~~|~~ \Omega, (x \mapsto x_{s}) \\
+  \Lambda ::= \varepsilon ~~|~~ \Lambda, (x \mapsto \hat{x})
+\end{array}
+\]
+
+\subsection*{Forward pass ($\Rightarrow_F$)} 
+\begin{figure}[!h] 
+\centering
+\fbox{
+\begin{mathpar}
+\inferrule* [right=FwdLoop]
+ {
+ e = \Loop{\seq{x}}{e_0}{y}{e_n}{e_{body}} \\
+  x_{s_0}~\text{fresh} \\
+  x_{s_0} = \Replicate~e_n~{\mathbf 0}
+}
+{
+ e \Rightarrow_{F}  \ctx{\Loop{(\seq{x}, x_{s})}{(e_0, x_{s_0})}{y}{e_{n}}{(e_{body}, x_s[y] = \seq{x})}}{(x \mapsto x_{s_0})}
+}
+\end{mathpar}
+}
+\end{figure}
+
+\subsection*{Reverse pass ($\Lleftarrow$)} 
+\begin{figure}[!h] 
+\centering
+\fbox{
+\begin{mathpar}
+\inferrule* [right=RevLoop]
+            {
+              e_{body} = \Let{\seq{rs}}{e_{body}'}{\seq{rs}} \\
+  e_{loop} = \Let{\seq{lres}}{\Loop{\seq{x}}{e_0}{y}{e_n}{e_{body}}}{\seq{lres}}\\
+  e_{loop} \Rightarrow_F \ctx{e_{loop}'}{\Omega} \\
+  \seq{fv} = FV(e_{body}) \setminus \seq{x} \\
+  \seq{\hat{x}},~ \seq{\hat{fv}},~\seq{\hat{rs}} ~fresh \\
+  reset = \Map~(\fn\_.~\mathbf 0)~\seq{\hat{x}} \\
+  \Lambda_1' = \Lambda_1,~\seq{x} \mapsto \seq{\hat{x}},~\seq{fv} \mapsto \seq{\hat{fv}},~\seq{rs} \mapsto \seq{\hat{rs}} \\
+  \hat{e}_{body} = \Let{\seq{\hat{rs}'}}{\hat{e}_{body}'}{\seq{\hat{rs}'}} \\
+  (\ctxa{\Lambda_1'}{e_{body}}{\Omega}) \Lleftarrow (\ctxa{\Lambda_2}{\hat{e}_{body}}{\Omega}) \\
+ % \Delta_{FV} = FV(e_{body}) \cap dom(\Lambda_2 \setminus \Lambda_1) \\
+  \hat{e}_{body}' = \Let{\seq{rs}}{\Omega[y]}{(\Let{\seq{\hat{rs}'}}{\hat{e}_{body}'}{(reset, \seq{\hat{rs}'}, \seq{fv}}))} \\
+ % (\ctxa{\Lambda_2}{\Let{\seq{x}}{e_0}{\seq{x}}}{\varepsilon}) \Lleftarrow  (\ctxa{\Lambda_3}{\Let{\seq{\hat{x}}}{\hat{e}_0}{\seq{x}}}{\varepsilon}) \\
+  \widehat{init} = (reset,\Lambda_1[\seq{lres}], \Lambda_1[\seq{fv}]) \\
+  \hat{e}_{loop} = {\LoopR{(\seq{\hat{x}},\seq{\hat{rs}}, \seq{\hat{fv}})}{\widehat{init}}{y}{e_n - 1}{\hat{e}_{body}}}\\
+  \Lambda_3 = \Lambda_1, \seq{fv} \mapsto \seq{\hat{fv}}
+}
+            {
+                    \left(\ctxa{\Lambda_1}{e_{loop}}{\Omega}\right)
+                    \Lleftarrow \left(\ctxa{\Lambda_3}{\Let{(\seq{\hat{x}'},\seq{\hat{rs}'}, \seq{\hat{fv}'})}{\hat{e}_{loop}}{(\Let{\seq{\hat{fv}'}}{\seq{\hat{fv}} + \seq{\hat{rs}'}}{\seq{\hat{fv}'}})}}{\Omega}\right)\\
+}
+\end{mathpar}
+}
+\end{figure}
+
+\end{document}
