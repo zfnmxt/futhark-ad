@@ -14,8 +14,10 @@
 %\newcommand{\Loop}[5]{\ttb{loop}~#1=#2~\ttb{for}~#3<#4~\ttb{do}~#5}
 \newcommand{\ctx}[2]{#1 ~{\parallel}~ #2}
 \newcommand{\ctxa}[3]{#1 \vdash #2 ~{\parallel}~ #3}
+\newcommand{\ctxb}[2]{#1 \vdash #2}
 \newcommand{\LoopR}[5]{\kw{loop}~#1~\texttt{=}~#2~\kw{for}~#3=#4~\kw{to}~0~\kw{do}~#5}
 \newcommand{\update}[2]{#1\mathrel{+}=#2}
+\newcommand\doubleplus{+\kern-1.3ex+\kern0.8ex}
 
 \begin{document}
 \[
@@ -34,7 +36,7 @@
 \]
 
 \section*{Reverse-mode Rules}
-We define \emph{accumulator maps} ($\parallel \Omega$) and \emph{adjoint contexts} $(\Lambda \vdash)$ as
+We define \emph{tape maps} ($\parallel \Omega$) and \emph{adjoint contexts} $(\Lambda \vdash)$ as
 
 \[
 \begin{array}{lcl}
@@ -57,6 +59,16 @@ We define \emph{accumulator maps} ($\parallel \Omega$) and \emph{adjoint context
 {
  e \Rightarrow_{F}  \ctx{\Loop{(\seq{x}, x_{s})}{(e_0, x_{s_0})}{y}{e_{n}}{(e_{body}, x_s[y] = \seq{x})}}{(x \mapsto x_{s_0})}
 }
+
+\inferrule* [right=FwdIFE]
+{
+  \If{e_p}{e_t}{e_f}
+  e_t \Rightarrow_F \ctx{e_t'}{\Omega_t}
+  e_f \Rightarrow_F \ctx{e_f'}{\Omega_f}
+}
+{
+  \If{e_p}{e_t}{e_f} \Rightarrow_F \ctx{\If{e_p}{e_t'}{e_f'}}{\Omega_t \cup \Omega_f}
+}
 \end{mathpar}
 }
 \end{figure}
@@ -76,7 +88,7 @@ We define \emph{accumulator maps} ($\parallel \Omega$) and \emph{adjoint context
   reset = \Map~(\fn\_.~\mathbf 0)~\seq{\hat{x}} \\
   \Lambda_1' = \Lambda_1,~\seq{x} \mapsto \seq{\hat{x}},~\seq{fv} \mapsto \seq{\hat{fv}},~\seq{rs} \mapsto \seq{\hat{rs}} \\
   \hat{e}_{body} = \Let{\seq{\hat{rs}'}}{\hat{e}_{body}'}{\seq{\hat{rs}'}} \\
-  (\ctxa{\Lambda_1'}{e_{body}}{\Omega}) \Lleftarrow (\ctxa{\Lambda_2}{\hat{e}_{body}}{\Omega}) \\
+  (\ctxb{\Lambda_1'}{e_{body}}) \Lleftarrow (\ctxb{\Lambda_2}{\hat{e}_{body}}) \\
  % \Delta_{FV} = FV(e_{body}) \cap dom(\Lambda_2 \setminus \Lambda_1) \\
   \hat{e}_{body}' = \Let{\seq{rs}}{\Omega[y]}{(\Let{\seq{\hat{rs}'}}{\hat{e}_{body}'}{(reset, \seq{\hat{rs}'}, \seq{fv}}))} \\
  % (\ctxa{\Lambda_2}{\Let{\seq{x}}{e_0}{\seq{x}}}{\varepsilon}) \Lleftarrow  (\ctxa{\Lambda_3}{\Let{\seq{\hat{x}}}{\hat{e}_0}{\seq{x}}}{\varepsilon}) \\
@@ -85,8 +97,26 @@ We define \emph{accumulator maps} ($\parallel \Omega$) and \emph{adjoint context
   \Lambda_3 = \Lambda_1, \seq{fv} \mapsto \seq{\hat{fv}}
 }
             {
-                    \left(\ctxa{\Lambda_1}{e_{loop}}{\Omega}\right)
-                    \Lleftarrow \left(\ctxa{\Lambda_3}{\Let{(\seq{\hat{x}'},\seq{\hat{rs}'}, \seq{\hat{fv}'})}{\hat{e}_{loop}}{(\Let{\seq{\hat{fv}'}}{\seq{\hat{fv}} + \seq{\hat{rs}'}}{\seq{\hat{fv}'}})}}{\Omega}\right)\\
+                    \ctxb{\Lambda_1}{e_{loop}}
+                    \Lleftarrow \left(\ctxb{\Lambda_3}{\Let{(\seq{\hat{x}'},\seq{\hat{rs}'}, \seq{\hat{fv}'})}{\hat{e}_{loop}}{(\Let{\seq{\hat{fv}'}}{\seq{\hat{fv}} + \seq{\hat{rs}'}}{\seq{\hat{fv}'}})}}\right)\\
+            }
+
+\inferrule* [right=RevIFE]
+            {
+  \ctxb{\Lambda}{e_t} \Lleftarrow \ctxb{\Lambda_t}{\Let{\seq{\hat{fv}}_t}{\hat{e}_t}}{\seq{\hat{fv}}_t}\\
+  \ctxb{\Lambda}{e_f} \Lleftarrow \ctxb{\Lambda_f}{\Let{\seq{\hat{fv}}_f}{\hat{e}_f}}{\seq{\hat{fv}}_f}\\
+  \Lambda_{\Delta_t} = \Lambda \setminus \Lambda_t \\
+  \Lambda_{\Delta_f} = \Lambda \setminus \Lambda_f \\
+  \seq{\hat{fv}}~ fresh \\
+  %\Lambda_{\cup} = \Lambda_{\Delta_t} \cup \Lambda_{\Delta_f} \\
+  %\Lambda_t' = \Lambda_{\cup}\left[dom(\Lambda_{\Delta_f}) \mapsto \Lambda\left[dom(\Lambda_{\Delta f})\right]\right]\\
+  %\Lambda_f' = \Lambda_{\cup}\left[dom(\Lambda_{\Delta_t}) \mapsto \Lambda\left[dom(\Lambda_{\Delta t})\right]\right]\\
+  \hat{e}_t' = \Let{\seq{\hat{fv}}}{sort(\seq{\hat{fv}}_t ~ \doubleplus ~ im(\Lambda_{\Delta_f} - \Lambda_{\Delta_t}))}{(\Let{\seq{\hat{fv}}_t}{\hat{e}_t}{\seq{\hat{fv}}_t})} \\
+  \hat{e}_f' = \Let{\seq{\hat{fv}}}{sort(\seq{\hat{fv}}_f ~ \doubleplus ~ im(\Lambda_{\Delta_t} - \Lambda_{\Delta_f}))}{(\Let{\seq{\hat{fv}}_f}{\hat{e}_f}{\seq{\hat{fv}}_f})} \\
+  \Lambda' = \Lambda, ~dom(\Lambda_{\Delta_t} \cup \Lambda_{\Delta_f}) \mapsto \seq{\hat{fv}}
+}
+{
+  \ctxb{\Lambda}{\If{e_p}{e_t}{e_f}}\Lleftarrow \ctxb{\Lambda'}{\If{e_p}{\hat{e}_t'}{\hat{e}_f'}}
 }
 \end{mathpar}
 }
