@@ -5,6 +5,7 @@
 \usepackage{graphicx,color}
 \usepackage{booktabs}
 \usepackage{listings}
+\usepackage{hyperref}
 \usepackage[shortlabels]{enumitem}
 \usepackage[margin=1.0in, marginparwidth=2in]{geometry}
 
@@ -20,6 +21,8 @@
 \newcommand\doubleplus{+\kern-1.3ex+\kern0.8ex}
 
 \begin{document}
+\section*{Terms}
+(Stolen from the Incremental Flattening \href{https://futhark-lang.org/publications/ppopp19.pdf}{paper} :) )
 \[
 \begin{array}{lcl}
   \id{bop} & ::= & \kw{+} ~~|~~ \kw{-} ~~|~~ \kw{*} ~~|~~ \kw{/} ~~|~~ \kw{<} ~~|~~ \cdots \\

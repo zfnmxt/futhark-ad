@@ -436,10 +436,8 @@ revStm stm@(Let _ _ (DoLoop _ _ ForLoop{} _)) = do
        -- Add contribution due to the initial valpats binding.
        (_, retmap, final_contrib_stms) <- unzip3 <$> zipWithM updateAdjoint fv (map patElemName _pats_body_res)
 
-
        return $ (foldl (M.union) mempty retmap, boundStms <> _iter_reset_stms <> mconcat free_stms <> mconcat loopres_stms <> oneStm _stm <> mconcat final_contrib_stms)
 
-    --  error "foo"
        where mkBindings =
                zipWithM $ \_b _v -> do
                  t <- lookupType _v
