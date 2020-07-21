@@ -68,6 +68,9 @@ deriving instance Data Overflow
 deriving instance Data IntType
 deriving instance Data FloatType
 
+--data Adj = Scalar VName
+--         | AdjArray Shape 
+
 data Env = Env
     { adjs :: M.Map VName VName
     , tape :: M.Map VName VName
@@ -169,12 +172,8 @@ insAdj v _v = modify $ \env -> env { adjs = M.insert v _v (adjs env) }
 insAdjMap :: M.Map VName VName -> ADM ()
 insAdjMap update = modify $ \env -> env { adjs = update `M.union` adjs env }
 
-lookupTape :: VName -> ADM (VName)
-lookupTape v = do
-  maybeV' <- gets $ M.lookup v . tape
-  case maybeV' of
-    Nothing -> error "oops"
-    Just v' -> return v'
+lookupTape :: VName -> ADM (Maybe VName)
+lookupTape v = gets $ M.lookup v . tape
 
 lookupAdj :: VName -> ADM (VName, M.Map VName VName, Stms SOACS)
 lookupAdj v = do
@@ -312,7 +311,13 @@ revFwdStm stm@(Let (Pattern [] pats) aux (DoLoop [] valpats (ForLoop v it bound 
     (accsLoop', bodyStms) <- runBinderT' $ do
       accsLoop' <- forM (zip3 accsLoop accTs valpats) $ \(accLoop, accT, (param, _)) ->
           inScopeOf (accLoop, LParamName accT) $ do
-            letSubExp "update_acc" =<< eWriteArray accLoop [toExp v] (toExp $ paramName param)
+            arr_t <- lookupType accLoop
+            is' <- mapM (letSubExp "write_i") =<< sequence [toExp v]
+            v' <- letSubExp "write_v" =<< (toExp $ paramName param)
+            res <- letInPlace "update_acc" accLoop
+              (fullSlice arr_t (map DimFix is')) $ BasicOp $ SubExp v'
+            return $ Var  res
+            --letSubExp "update_acc" =<< eWriteArray accLoop [toExp v] (toExp $ paramName param)
       addStms stms
       return accsLoop'
     let body' = Body decs bodyStms $ res ++ accsLoop'
@@ -327,141 +332,189 @@ revFwdStm stm@(Let (Pattern [] pats) aux (DoLoop [] valpats (ForLoop v it bound 
         emptyAcc (Array t (Shape dims) _) = BasicOp $ Scratch t dims
         emptyAcc _                        = error "Invalid accumulator type."
    
-revFwdStm stm = return mempty
+revFwdStm stm = return $ oneStm stm
 
 getVar :: SubExp -> VName
 getVar (Var v) = v
 
 revStm :: Stm -> ADM (M.Map VName VName, Stms SOACS)
 revStm stm@(Let _ _ (DoLoop _ _ ForLoop{} _)) = do
-  stm' <- renameStm stm
+  --stm' <- renameStm stm
+  let stm' = stm
   case stm' of
-   (Let (Pattern [] pats) aux (DoLoop [] valpats loop@(ForLoop v it bound []) body@(Body decs stms res))) ->
-     inScopeOf stm' $ localScope (scopeOfFParams $ map fst valpats ++ [Param v (Prim (IntType it))]) $ do
-       traceM $ pretty stm'
-       -- Look-up the stored loop iteration variables. Iteration
-       -- variables are the variables bound in `valpats`. Every
-       -- iteration of the loop, they are rebound to the result of the
-       -- loop body.
-       saved_iter_vars <- mapM (lookupTape . patElemName) pats
-       
-       -- Get the adjoints of the iteration variables.
-       let iter_vars = map (paramName . fst) valpats
-       (_iter_vars, _iter_map, iter_stms) <- unzip3 <$> mapM lookupAdj iter_vars
+   (Let (Pattern [] pats) aux (DoLoop [] valpats loop@(ForLoop v it bound []) body_@(Body decs_ stms_ res_))) ->
+      inScopeOf stm' $ localScope (scopeOfFParams $ map fst valpats ++ [Param v (Prim (IntType it))]) $ do
+        body@(Body decs stms res) <- if stms_ == mempty
+                                      then do
+                                        (res', stms) <- runBinderT' $
+                                          forM res_ $ \se -> do
+                                                v <- newVName "foo"
+                                                letBindNames [v] =<< eSubExp se
+                                                return $ Var v
+                                        traceM $ pretty $ Body decs_ stms res'
+                                        return $ Body decs_ stms res'
+                                      else
+                                        return $ Body decs_ stms_ res_
+        traceM $ "stms_" ++ show stms_ ++ "stms" ++ show stms ++ "\n" ++ "body" ++ pretty body
+        -- Get the adjoints of the iteration variables.
+        let iter_vars = map (paramName . fst) valpats
+        (_iter_vars, _iter_map, iter_stms) <- unzip3 <$> mapM lookupAdj iter_vars
 
-       -- "Reset" expressions for the iteration adjoints. Reset expressions just zero-out
-       -- the adjoint so that the adjoint on each loop iteration starts from 0. (If you
-       -- unroll a loop, each iteration adjoint would be unique and thus start from 0.)
-       (_iter_reset, _iter_reset_stms) <- runBinderT' $ forM iter_vars $ \v -> do
-         e <- eBlank =<< lookupType v
-         letExp "reset" e
-         
-       -- Construct param-value bindings for the iteration adjoints.
-       _iter_params <- inScopeOf (_iter_reset_stms : iter_stms) $ mkBindings _iter_vars _iter_reset
+        -- "Reset" expressions for the iteration adjoints. Reset expressions just zero-out
+        -- the adjoint so that the adjoint on each loop iteration starts from 0. (If you
+        -- unroll a loop, each iteration adjoint would be unique and thus start from 0.)
+        (_iter_reset, _iter_reset_stms) <- runBinderT' $ forM iter_vars $ \v -> do
+          e <- eBlank =<< lookupType v
+          letExp "reset" e
+          
+        -- Construct param-value bindings for the iteration adjoints.
+        _iter_params <- inScopeOf (_iter_reset_stms : iter_stms) $ mkBindings _iter_vars _iter_reset
 
-       -- Get adjoints for the free variables in the loop. Iteration
-       -- variables are free in the body but bound by the loop, which
-       -- is why they're subtracted off.
-       let fv = namesToList (freeIn body) \\ iter_vars
+        -- Get adjoints for the free variables in the loop. Iteration
+        -- variables are free in the body but bound by the loop, which
+        -- is why they're subtracted off.
+        let fv = namesToList (freeIn body) \\ iter_vars
 
-       -- Get the adjoints of the result variables
-       (_free_vars, _free_map, free_stms) <- unzip3 <$> mapM lookupAdj fv
+        -- Get the adjoints of the result variables
+        (_free_vars, _free_map, free_stms) <- unzip3 <$> mapM lookupAdj fv
 
-       -- Generate new names to bind `_free_vars` to `valpats` and
-       -- link them to the free variables.
-       _free_binds <- forM _free_vars $ newVName . baseString
-       zipWithM insAdj fv _free_binds
-
-       -- Construct param-value bindings the free variable adjoints.
-       _free_params <- inScopeOf free_stms $ mkBindings _free_binds _free_vars
-
-       -- Make adjoints for each result variable of the original body.
-       -- The result adjoints of the ith iteration must be set to the
-       -- adjoints of the saved loop variables of the i+1th iteration.
-       -- Important: this must be done *before* computing the
-       -- reverse of the body.
-       _original_res <- forM (toVars res) $ \v -> do
-             v' <- adjVName v
-             insAdj v v'
-             return v'
-
-       -- Compute the reverse of the body.
-       (body_update_map, _, Body _decs _stms _res) <- revBody' body
-
-       (_body_res_vars, _body_res_map, body_res_stms) <- unzip3 <$> mapM lookupAdj (toVars res)
-
-       zipWithM insAdj fv _free_binds
-
-       let body_update_map_free = M.restrictKeys body_update_map $ S.fromList fv
-       
-       (_iter_vars', _, _) <- unzip3 <$> mapM lookupAdj iter_vars
-       let _res' = map Var $ _iter_reset ++ _iter_vars' ++ M.elems body_update_map_free
-
-       -- Construct the new return patterns.
-       _pats_iter <- inScopeOf (mconcat iter_stms) $ mkPats _iter_vars
-       _pats_body_res <- inScopeOf stms $ mkPats' (toVars res) _body_res_vars
-       _pats_free_vars <- inScopeOf _stms $ mkPats $ M.elems body_update_map_free
+        -- Generate new names to bind `_free_vars` to `valpats` and
+        -- link them to the free variables.
+        _free_binds <- forM _free_vars $ newVName . baseString
+        zipWithM insAdj fv _free_binds
         
-       let _pats = _pats_iter ++ _pats_body_res ++ _pats_free_vars
+        --traceM $ "fv" ++ pretty fv
+        --traceM $ "_free_vars_early" ++ pretty _free_vars
+        --traceM $ "_free_binds" ++ pretty _free_binds
+        --traceM $ "free_stms" ++ pretty free_stms
 
-       traceM $ "_pats: " ++ pretty _pats
+        -- Construct param-value bindings the free variable adjoints.
+        _free_params <- inScopeOf free_stms $ mkBindings _free_binds _free_vars
 
-       -- Construct value bindings for the body result adjoints. The initial binding is simply the
-       -- adjoint of the nth iteration, which is given by the variables in the original pattern of the let-bind.
-       (_loopres, _loopres_map, loopres_stms) <- unzip3 <$> forM pats (\(PatElem p _) -> lookupAdj p)
+        -- Make adjoints for each result variable of the original body.
+        -- The result adjoints of the ith iteration must be set to the
+        -- adjoints of the saved loop variables of the i+1th iteration.
+        -- Important: this must be done *before* computing the
+        -- reverse of the body.
+        _original_res <- forM (toVars res) $ \v -> do
+              v' <- adjVName v
+              insAdj v v'
+              return v'
 
-       let _body_params = zipWith3 (\_b (PatElem _ t) _l  ->  (Param _b (toDecl t Unique), Var _l))
-                        _original_res
-                        _pats_body_res
-                        _loopres
+                  -- return (Param _b (toDecl t Unique), Var _v)
+        -- Compute the reverse of the body.
+        (body_update_map, Body _decs _stms _res) <- inScopeOf (map (\((Param _b t),_) -> (_b, FParamName t)) (_free_params ++ _iter_params)) $
+                                                      revBody' body
 
-       (bound', boundStms) <- runBinderT' $ letSubExp "bound" $ BasicOp (BinOp (Sub it OverflowWrap) bound (Constant $ IntValue $ intValue it 1))
+        (_body_res_vars, _body_res_map, body_res_stms) <- unzip3 <$> mapM lookupAdj (toVars res)
 
-       -- Loop body set-up
-       (v', _loopSetup) <- runBinderT' $ do
-         -- Go backwards
-         v' <- letSubExp "idx" $ BasicOp (BinOp (Sub it OverflowWrap) bound' (Var v))
+        zipWithM insAdj fv _free_binds
 
-         -- Bind the accumulators
-         forM_ (zip saved_iter_vars valpats) $ \(v, (param, _)) -> 
-           letBindNames [paramName param] =<< eIndex v v'
+        let body_update_map_free = M.restrictKeys body_update_map $ S.fromList fv
+        
+        (_iter_vars', _, _) <- unzip3 <$> mapM lookupAdj iter_vars
+        let _res' = map Var $ _iter_reset ++ _iter_vars' ++ M.elems body_update_map_free
 
-         return v'
+        -- Remove any free paramters that weren't actually updated in the loop body
+        let _free_params' = map fst $ filter (\(p, v) -> v `M.member` body_update_map_free) $ zip _free_params fv
 
-       let subst = case v' of Constant{} -> error "oops"; Var v'' -> M.singleton v v''
-           _valpats = _iter_params ++ _body_params ++ _free_params
-           _body = Body _decs (_loopSetup <> substituteNames subst _stms) _res'
-           _stm = Let (Pattern [] _pats) aux (DoLoop [] _valpats (ForLoop v it bound []) _body)
-           
-       -- Update the free variables to point to new correct adjoints
-       zipWithM_ insAdj fv $ map patElemName _pats_free_vars
+        -- Construct the new return patterns.
+        _pats_iter <- inScopeOf (mconcat iter_stms) $ mkPats _iter_vars
+        _pats_body_res <- inScopeOf stms $ mkPats' (toVars res) _body_res_vars
+        _pats_free_vars <- inScopeOf _stms $ mkPats $ M.elems body_update_map_free
+         
+        let _pats = _pats_iter ++ _pats_body_res ++ _pats_free_vars
 
-       -- Add contribution due to the initial valpats binding.
-       (_, retmap, final_contrib_stms) <- unzip3 <$> zipWithM updateAdjoint fv (map patElemName _pats_body_res)
+        
+        traceM $ "_free_binds" ++ pretty _free_binds
+        traceM $ "_pats+free+vars" ++ pretty _pats_free_vars
+        traceM $ "_pats: " ++ pretty _pats
 
-       return $ (foldl (M.union) mempty retmap, boundStms <> _iter_reset_stms <> mconcat free_stms <> mconcat loopres_stms <> oneStm _stm <> mconcat final_contrib_stms)
+        -- Construct value bindings for the body result adjoints. The initial binding is simply the
+        -- adjoint of the nth iteration, which is given by the variables in the original pattern of the let-bind.
+        (_loopres, _loopres_map, loopres_stms) <- unzip3 <$> forM pats (\(PatElem p _) -> lookupAdj p)
 
-       where mkBindings =
-               zipWithM $ \_b _v -> do
-                 t <- lookupType _v
-                 return (Param _b (toDecl t Unique), Var _v)
-             toVars :: [SubExp] -> [VName]
-             toVars = concatMap (\se -> case se of
-                                    Constant{} -> []
-                                    Var v      -> [v])
-             mkPats = mapM $ \_v -> do
-                        t <- lookupType _v
-                        _p <- newVName $ baseString _v <> "_res"
-                        return $ PatElem _p t
-                        
-             mkPats' = zipWithM $ \v _v -> do
-                        t <- lookupType v
-                        _p <- newVName $ baseString _v <> "_res"
-                        return $ PatElem _p t
+        let _body_params = zipWith3 (\_b (PatElem _ t) _l  ->  (Param _b (toDecl t Unique), Var _l))
+                         _original_res
+                         _pats_body_res
+                         _loopres
+
+        (bound', boundStms) <- runBinderT' $ letSubExp "bound" $ BasicOp (BinOp (Sub it OverflowWrap) bound (Constant $ IntValue $ intValue it 1))
+        
+        -- Look-up the stored loop iteration variables. Iteration
+        -- variables are the variables bound in `valpats`. Every
+        -- iteration of the loop, they are rebound to the result of the
+        -- loop body.
+        saved_iter_vars_maybe <- sequence <$> mapM (lookupTape . patElemName) pats
+
+        -- Loop body set-up
+        (v', _loopSetup) <- runBinderT' $ do
+          -- Go backwards
+          v' <- letSubExp "idx" $ BasicOp (BinOp (Sub it OverflowWrap) bound' (Var v))
+
+          case saved_iter_vars_maybe of
+            Just saved_iter_vars -> 
+              -- Bind the accumulators
+              forM_ (zip saved_iter_vars valpats) $ \(v, (param, _)) -> 
+                letBindNames [paramName param] =<< eIndex v v'
+
+            Nothing ->
+              addStms stms
+
+          return v'
+
+        let subst = case v' of Constant{} -> error "oops"; Var v'' -> M.singleton v v''
+            _valpats = _iter_params ++ _body_params ++ _free_params'
+            _body = case saved_iter_vars_maybe of
+                      Just _ ->
+                        Body _decs (_loopSetup <> substituteNames subst _stms) _res'
+                      Nothing ->
+                        Body _decs (_loopSetup <> substituteNames subst _stms) (_res' ++ res)
+            _stm = case saved_iter_vars_maybe of
+                     Just _ ->
+                       Let (Pattern [] _pats) aux (DoLoop [] _valpats (ForLoop v it bound []) _body)
+                     Nothing ->
+                       Let (Pattern [] (_pats ++ pats)) aux (DoLoop [] (_valpats ++ valpats) (ForLoop v it bound []) _body)
+            
+        -- Update the free variables to point to new correct adjoints
+        zipWithM_ insAdj fv $ map patElemName _pats_free_vars
+        
+        -- If any free variables weren't updated, fix their adjoint bindings
+        mapM (uncurry insAdj) $ filter (\(v, _) -> v `notElem` M.keys body_update_map_free) $ zip fv _free_vars
+
+        traceM $ "snd valpats" ++ pretty (map snd valpats)
+        traceM $ "other thing" ++ pretty (map patElemName _pats_body_res)
+        -- Add contribution due to the initial valpats binding.
+        --(_, _, final_contrib_stms) <- unzip3 <$> (mapM (uncurry updateAdjoint) $ map (\(Var v, p) -> (v, p)) $ filter (\(se, p) -> case se of Var v -> v `elem` fv; _ -> False) $ zip (map snd valpats) (map patElemName _pats_body_res))
+        
+        (_, _, final_contrib_stms) <- unzip3 <$> (mapM (uncurry updateAdjoint) $ map (\(Var v, p) -> (v, p)) $ filter (\(se, p) -> case se of Var v -> True; _ -> False) $ zip (map snd valpats) (map patElemName _pats_body_res))
+
+        adjs <- gets adjs
+
+        let changed_fv_map = M.restrictKeys adjs (S.fromList fv)
+
+        return $ (changed_fv_map, boundStms <> _iter_reset_stms <> mconcat free_stms <> mconcat loopres_stms <> oneStm _stm <> mconcat final_contrib_stms)
+
+        where mkBindings =
+                zipWithM $ \_b _v -> do
+                  t <- lookupType _v
+                  return (Param _b (toDecl t Unique), Var _v)
+              toVars :: [SubExp] -> [VName]
+              toVars = concatMap (\se -> case se of
+                                     Constant{} -> []
+                                     Var v      -> [v])
+              mkPats = mapM $ \_v -> do
+                         t <- lookupType _v
+                         _p <- newVName $ baseString _v <> "_res"
+                         return $ PatElem _p t
+                         
+              mkPats' = zipWithM $ \v _v -> do
+                         t <- lookupType v
+                         _p <- newVName $ baseString _v <> "_res"
+                         return $ PatElem _p t
    _ -> undefined
 
 revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux cOp@(BasicOp CmpOp{})) = do
-  --(_, us1, s1) <- inScopeOf (p, LParamName t) $ lookupAdj p
   return (mempty, oneStm stm)
 
 revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (BinOp op (Var x) (Var y)))) = do
@@ -490,7 +543,6 @@ revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (BinOp op (Var x) 
   where op' = showConstr $ toConstr op
 
 revStm stm@(Let (Pattern [] pats) aux (If cond t@(Body _ _ t_res) f@(Body _ _ f_res) attr)) = do
-  --(_p, us1, s1) <- inScopeOf (p, LParamName t) $ lookupAdj $ patElemName pat
   (_pats, uspats, stm_pats) <- unzip3 <$> mapM (lookupAdj . patElemName) pats
   zipWithM insAdj (toVars t_res) _pats
   zipWithM insAdj (toVars f_res) _pats
@@ -524,13 +576,20 @@ revStm stm@(Let (Pattern [] pats) aux (If cond t@(Body _ _ t_res) f@(Body _ _ f_
   ifret <- staticShapes <$> forM deltas lookupType
   let attr' = attr { ifReturns = ifret }
 
-  return $ (mconcat res_map, (mconcat delta_stms) <> (oneStm (Let (Pattern [] _pats') aux (If cond _t' _f' attr'))))
+  return (mconcat res_map, mconcat delta_stms <> oneStm (Let (Pattern [] _pats') aux (If cond _t' _f' attr')))
 
   where toVars :: [SubExp] -> [VName]
         toVars = concatMap (\se -> case se of
                                     Constant{} -> []
                                     Var v      -> [v])
+
+revStm stm@(Let (Pattern [] pats) aux (BasicOp (Index v slice))) = do
+  undefined
   
+revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (SubExp (Var v)))) = do
+  (_p, us1, s1) <- inScopeOf (p, LParamName t) $ lookupAdj $ patElemName pat
+  (_, us2, s2)  <- updateAdjoint v _p
+  return (us2 <> us1, s1 <> s2)
 
 revStm stm = error $ "unsupported stm: " ++ pretty stm ++ "\n\n\n" ++ show stm
 
@@ -540,8 +599,16 @@ revStms stms = revStms' stms
            fwdStm <- revFwdStm stm
            (u, _stm)   <- inScopeOf fwdStm $ revStm stm
            (us, fwdStms, _stms) <- revStms' stms
-           return (us <> u, fwdStm <> fwdStms, _stms <> _stm)
+           return (us <> u, fwdStms <> fwdStm, _stm <> _stms)
          revStms' mempty = return (M.empty, mempty, mempty)
+         
+revStms' :: Stms SOACS -> ADM (M.Map VName VName, Stms SOACS)
+revStms' stms = revStms' stms
+  where  revStms' (stms  :|> stm) = do
+           (u, _stm)   <- revStm stm
+           (us, _stms) <- revStms' stms
+           return (us <> u, _stms <> _stm)
+         revStms' mempty = return (M.empty, mempty)
 
 revBody :: Body -> ADM (M.Map VName VName, Body, Body)
 revBody b@(Body desc stms res) = do
@@ -551,13 +618,13 @@ revBody b@(Body desc stms res) = do
   let body' = Body desc _stms $ map Var $ M.elems us'
   return (us', Body desc fwdStms res, body')
   
-revBody' :: Body -> ADM (M.Map VName VName, Body, Body)
+revBody' :: Body -> ADM (M.Map VName VName, Body)
 revBody' b@(Body desc stms res) = do
-  (us, fwdStms, _stms) <- inScopeOf stms $ revStms stms
+  (us, _stms) <- inScopeOf stms $ revStms' stms
   let fv  = namesToList $ freeIn b
       us' = M.filterWithKey (\k _ -> k `elem` fv) us
   let body' = Body desc _stms $ map Var $ M.elems us'
-  return (us, Body desc fwdStms res, body')
+  return (us, body')
 
 ($^) :: String -> SubExp -> ADBind SubExp
 ($^) f x = lift $ letSubExp "f x" $ Apply (nameFromString f) [(x, Observe)] [primRetType rt] (Safe, noLoc, mempty)
@@ -817,7 +884,7 @@ fwdPass =
 revFun :: Stms SOACS -> FunDef SOACS -> PassM (FunDef SOACS)
 revFun consts fundef@(FunDef entry name ret params body@(Body decs stms res)) = do
   let initial_renv = REnv { tans = mempty, envScope = mempty }
-  flip runADM initial_renv $ inScopeOf consts $ inScopeOf fundef $ do
+  flip runADM initial_renv $ inScopeOf consts $ inScopeOf fundef $ inScopeOf stms $ do
     let rvars  = concatMap (\se -> case se of Constant{} -> []; Var v -> [v]) res
     _params <- zipWithM (\v t -> do
                            _v <- adjVName v
@@ -825,6 +892,8 @@ revFun consts fundef@(FunDef entry name ret params body@(Body decs stms res)) = 
                            return $ Param _v (removeExtShapes t)) rvars ret
 
     (body_us, fwdBody@(Body fwdDecs fwdStms fwdRes), _body@(Body _decs _stms _res)) <- revBody body
+    --(body_us, fwdBody@(Body fwdDecs fwdStms fwdRes), _body) <- revBody body
+    (Body _decs _stms _res) <- renameBody _body
     let _rvars = concatMap (\se -> case se of Constant{} -> []; Var v -> [v]) _res
 
     _ret <- inScopeOf (stms <> _stms) $ concat <$> forM _res (\se ->
@@ -839,11 +908,14 @@ revFun consts fundef@(FunDef entry name ret params body@(Body decs stms res)) = 
              _rs = as
          in (_as, _rs)
 
-    return fundef { funDefEntryPoint = (\(as1, rs1) (as2, rs2) -> (as1 ++ as2, rs1 ++ rs2)) <$> entry <*> _entry
+    let rev = fundef { funDefEntryPoint = (\(as1, rs1) (as2, rs2) -> (as1 ++ as2, rs1 ++ rs2)) <$> entry <*> _entry
                     , funDefRetType = _ret
                     , funDefParams = params ++ _params
                     , funDefBody = Body _decs (fwdStms <> _stms) _res
                     }
+    traceM $ "\n" ++ "fundef" ++ pretty fundef
+    traceM $ "\n" ++ "ret" ++ pretty rev
+    return rev
     where removeExtShapes :: DeclExtType -> DeclType
           removeExtShapes (Prim t) = Prim t
           removeExtShapes (Array t (Shape ext_se) u) =  Array t (Shape (map (\(Free se) -> se) ext_se)) u
