@@ -338,24 +338,22 @@ getVar :: SubExp -> VName
 getVar (Var v) = v
 
 revStm :: Stm -> ADM (M.Map VName VName, Stms SOACS)
-revStm stm@(Let _ _ (DoLoop _ _ ForLoop{} _)) = do
-  --stm' <- renameStm stm
-  let stm' = stm
-  case stm' of
-   (Let (Pattern [] pats) aux (DoLoop [] valpats loop@(ForLoop v it bound []) body_@(Body decs_ stms_ res_))) ->
-      inScopeOf stm' $ localScope (scopeOfFParams $ map fst valpats ++ [Param v (Prim (IntType it))]) $ do
-        body@(Body decs stms res) <- if stms_ == mempty
-                                      then do
-                                        (res', stms) <- runBinderT' $
-                                          forM res_ $ \se -> do
-                                                v <- newVName "foo"
-                                                letBindNames [v] =<< eSubExp se
-                                                return $ Var v
-                                        traceM $ pretty $ Body decs_ stms res'
-                                        return $ Body decs_ stms res'
-                                      else
-                                        return $ Body decs_ stms_ res_
-        traceM $ "stms_" ++ show stms_ ++ "stms" ++ show stms ++ "\n" ++ "body" ++ pretty body
+revStm stm@(Let (Pattern [] pats) aux (DoLoop [] valpats loop@(ForLoop v it bound []) (Body decs_ stms_ res_))) = do
+      inScopeOf stm $ localScope (scopeOfFParams $ map fst valpats ++ [Param v (Prim (IntType it))]) $ do
+        -- Populate the body with a filler statement if there are none (makes taking adjoints easier).
+        body@(Body decs stms res) <-
+          if stms_ == mempty
+          then do
+            (res', stms) <- runBinderT' $
+              forM res_ $ \se -> do
+                    v <- newVName "filler"
+                    letBindNames [v] =<< eSubExp se
+                    return $ Var v
+            traceM $ pretty $ Body decs_ stms res'
+            return $ Body decs_ stms res'
+          else
+            return $ Body decs_ stms_ res_
+            
         -- Get the adjoints of the iteration variables.
         let iter_vars = map (paramName . fst) valpats
         (_iter_vars, _iter_map, iter_stms) <- unzip3 <$> mapM lookupAdj iter_vars
@@ -383,11 +381,6 @@ revStm stm@(Let _ _ (DoLoop _ _ ForLoop{} _)) = do
         _free_binds <- forM _free_vars $ newVName . baseString
         zipWithM insAdj fv _free_binds
         
-        --traceM $ "fv" ++ pretty fv
-        --traceM $ "_free_vars_early" ++ pretty _free_vars
-        --traceM $ "_free_binds" ++ pretty _free_binds
-        --traceM $ "free_stms" ++ pretty free_stms
-
         -- Construct param-value bindings the free variable adjoints.
         _free_params <- inScopeOf free_stms $ mkBindings _free_binds _free_vars
 
@@ -425,11 +418,6 @@ revStm stm@(Let _ _ (DoLoop _ _ ForLoop{} _)) = do
          
         let _pats = _pats_iter ++ _pats_body_res ++ _pats_free_vars
 
-        
-        traceM $ "_free_binds" ++ pretty _free_binds
-        traceM $ "_pats+free+vars" ++ pretty _pats_free_vars
-        traceM $ "_pats: " ++ pretty _pats
-
         -- Construct value bindings for the body result adjoints. The initial binding is simply the
         -- adjoint of the nth iteration, which is given by the variables in the original pattern of the let-bind.
         (_loopres, _loopres_map, loopres_stms) <- unzip3 <$> forM pats (\(PatElem p _) -> lookupAdj p)
@@ -466,31 +454,12 @@ revStm stm@(Let _ _ (DoLoop _ _ ForLoop{} _)) = do
             forM_ (zip saved_iter_vars valpats) $ \(v, (param, _)) -> 
               letBindNames [paramName param] =<< eIndex v v'
 
-            --case saved_iter_vars_maybe of
-            --  Just saved_iter_vars -> 
-            --    -- Bind the accumulators
-            --    forM_ (zip saved_iter_vars valpats) $ \(v, (param, _)) -> 
-            --      letBindNames [paramName param] =<< eIndex v v'
-
-            --  Nothing ->
-            --    revFwdStm stm
-
             return v'
-            
-          --saved_iter_vars <- sequence <$> mapM (lookupTape . patElemName) pats
 
           let subst = case v' of Constant{} -> error "oops"; Var v'' -> M.singleton v v''
               _valpats = _iter_params ++ _body_params ++ _free_params'
-              _body = case Just () of --case saved_iter_vars_maybe of
-                        Just _ ->
-                          Body _decs (_loopSetup <> substituteNames subst _stms) _res'
-                        Nothing ->
-                          Body _decs (_loopSetup <> substituteNames subst _stms) (_res' ++ res)
-              _stm = case Just () of -- case saved_iter_vars_maybe of
-                       Just _ ->
-                         Let (Pattern [] _pats) aux (DoLoop [] _valpats (ForLoop v it bound []) _body)
-                       Nothing ->
-                         Let (Pattern [] (_pats ++ pats)) aux (DoLoop [] (_valpats ++ valpats) (ForLoop v it bound []) _body)
+              _body = Body _decs (_loopSetup <> substituteNames subst _stms) _res'
+              _stm = Let (Pattern [] _pats) aux (DoLoop [] _valpats (ForLoop v it bound []) _body)
               
           -- Update the free variables to point to new correct adjoints
           zipWithM_ insAdj fv $ map patElemName _pats_free_vars
@@ -498,25 +467,11 @@ revStm stm@(Let _ _ (DoLoop _ _ ForLoop{} _)) = do
           -- If any free variables weren't updated, fix their adjoint bindings
           mapM (uncurry insAdj) $ filter (\(v, _) -> v `notElem` M.keys body_update_map_free) $ zip fv _free_vars
 
-          traceM $ "snd valpats" ++ pretty (map snd valpats)
-          traceM $ "stm:" ++ pretty stm
-          traceM $ "body:" ++ pretty body
-          traceM $ "other thing" ++ pretty (map patElemName _pats_body_res)
-          traceM $ "_stm:" ++ pretty _stm
-          adfjs <- gets adjs
-          traceM $ show adfjs
-          -- Add contribution due to the initial valpats binding.
-          --(_, _, final_contrib_stms) <- unzip3 <$> (mapM (uncurry updateAdjoint) $ map (\(Var v, p) -> (v, p)) $ filter (\(se, p) -> case se of Var v -> v `elem` fv; _ -> False) $ zip (map snd valpats) (map patElemName _pats_body_res))
-          
           (_, _, final_contrib_stms) <- inScopeOf _stm (unzip3 <$> (mapM (uncurry updateAdjoint) $ map (\(Var v, p) -> (v, p)) $ filter (\(se, p) -> case se of Var v -> True; _ -> False) $ zip (map snd valpats) (map patElemName _pats_body_res)))
 
-          traceM "foafadf"
+          adj_map <- gets adjs
 
-          adjs <- gets adjs
-
-          let changed_fv_map = M.restrictKeys adjs (S.fromList fv)
-          
-          --error $ pretty $ (fwdStms <> boundStms <> _iter_reset_stms <> mconcat free_stms <> mconcat loopres_stms <> oneStm _stm <> mconcat final_contrib_stms)
+          let changed_fv_map = M.restrictKeys adj_map(S.fromList fv)
 
           return $ (changed_fv_map, fwdStms <> boundStms <> _iter_reset_stms <> mconcat free_stms <> mconcat loopres_stms <> oneStm _stm <> mconcat final_contrib_stms)
 
@@ -537,8 +492,7 @@ revStm stm@(Let _ _ (DoLoop _ _ ForLoop{} _)) = do
                          t <- lookupType v
                          _p <- newVName $ baseString _v <> "_res"
                          return $ PatElem _p t
-   _ -> undefined
-
+                         
 revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux cOp@(BasicOp CmpOp{})) = do
   return (mempty, oneStm stm)
 
