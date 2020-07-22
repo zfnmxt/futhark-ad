@@ -339,6 +339,7 @@ getVar (Var v) = v
 
 revStm :: Stm -> ADM (M.Map VName VName, Stms SOACS)
 revStm stm@(Let (Pattern [] pats) aux (DoLoop [] valpats loop@(ForLoop v it bound []) (Body decs_ stms_ res_))) = do
+ --fwdStm <- revFwdStm stm
       inScopeOf stm $ localScope (scopeOfFParams $ map fst valpats ++ [Param v (Prim (IntType it))]) $ do
         -- Populate the body with a filler statement if there are none (makes taking adjoints easier).
         body@(Body decs stms res) <-
@@ -521,8 +522,11 @@ revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (BinOp op (Var x) 
          return $ (us5 <> us4 <> us, ss <> s4 <> s5 <> s6 <> s7)
   where op' = showConstr $ toConstr op
 
-revStm stm@(Let (Pattern [] pats) aux (If cond t@(Body _ _ t_res) f@(Body _ _ f_res) attr)) = do
+revStm stm@(Let (Pattern [] pats) aux (If cond t@(Body _ t_stms t_res) f@(Body _ f_stms f_res) attr)) = do
   (_pats, uspats, stm_pats) <- unzip3 <$> mapM (lookupAdj . patElemName) pats
+  fwdStms <- revFwdStm stm
+  t_fwd <- revFwdStms t_stms
+  f_fwd <- revFwdStms f_stms
   zipWithM insAdj (toVars t_res) _pats
   zipWithM insAdj (toVars f_res) _pats
   saved_adjs <- gets adjs
@@ -549,13 +553,13 @@ revStm stm@(Let (Pattern [] pats) aux (If cond t@(Body _ _ t_res) f@(Body _ _ f_
     insAdj v v'
     return (PatElem v' t, M.singleton v v'))
 
-  let _t' = Body t_desc t_stms $ map Var _t_res'
-      _f' = Body f_desc f_stms $ map Var _f_res'
+  let _t' = Body t_desc (t_fwd <> t_stms) $ map Var _t_res'
+      _f' = Body f_desc (f_fwd <> f_stms) $ map Var _f_res'
 
   ifret <- staticShapes <$> forM deltas lookupType
   let attr' = attr { ifReturns = ifret }
 
-  return (mconcat res_map, mconcat delta_stms <> oneStm (Let (Pattern [] _pats') aux (If cond _t' _f' attr')))
+  return (mconcat res_map, fwdStms <> mconcat delta_stms <> oneStm (Let (Pattern [] _pats') aux (If cond _t' _f' attr')))
 
   where toVars :: [SubExp] -> [VName]
         toVars = concatMap (\se -> case se of
@@ -571,6 +575,17 @@ revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (SubExp (Var v))))
   return (us2 <> us1, s1 <> s2)
 
 revStm stm = error $ "unsupported stm: " ++ pretty stm ++ "\n\n\n" ++ show stm
+
+revFwdStms :: Stms SOACS -> ADM (Stms SOACS)
+revFwdStms (stm :<| stms) = do
+  fwdStm <- revFwdStm stm
+  fwdStms <- revFwdStms stms
+  return $ fwdStm <> fwdStms
+revFwdStms mempty = return mempty
+
+--revFwdBody :: Body -> ADM Body
+--revFwdBody b@(Body desc stms res) = do
+--  fwdStms <- revFwdStms stms
 
 revStms :: Stms SOACS -> ADM (M.Map VName VName, Stms SOACS, Stms SOACS)
 revStms stms = revStms' stms
@@ -870,7 +885,8 @@ revFun consts fundef@(FunDef entry name ret params body@(Body decs stms res)) = 
                            insAdj v _v
                            return $ Param _v (removeExtShapes t)) rvars ret
 
-    (body_us, fwdBody@(Body fwdDecs fwdStms fwdRes), _body@(Body _decs _stms _res)) <- revBody body
+    --(body_us, fwdBody@(Body fwdDecs fwdStms fwdRes), _body@(Body _decs _stms _res)) <- revBody' body
+    (body_us, _body@(Body _decs _stms _res)) <- revBody' body
     --(body_us, fwdBody@(Body fwdDecs fwdStms fwdRes), _body) <- revBody body
     (Body _decs _stms _res) <- renameBody _body
     let _rvars = concatMap (\se -> case se of Constant{} -> []; Var v -> [v]) _res
@@ -890,7 +906,8 @@ revFun consts fundef@(FunDef entry name ret params body@(Body decs stms res)) = 
     let rev = fundef { funDefEntryPoint = (\(as1, rs1) (as2, rs2) -> (as1 ++ as2, rs1 ++ rs2)) <$> entry <*> _entry
                     , funDefRetType = _ret
                     , funDefParams = params ++ _params
-                    , funDefBody = Body _decs (fwdStms <> _stms) _res
+                   -- , funDefBody = Body _decs (fwdStms <> _stms) _res
+                    , funDefBody = Body _decs _stms _res
                     }
     traceM $ "\n" ++ "fundef" ++ pretty fundef
     traceM $ "\n" ++ "ret" ++ pretty rev
