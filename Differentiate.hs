@@ -350,7 +350,6 @@ revStm stm@(Let (Pattern [] pats) aux (DoLoop [] valpats loop@(ForLoop v it boun
                     v <- newVName "filler"
                     letBindNames [v] =<< eSubExp se
                     return $ Var v
-            traceM $ pretty $ Body decs_ stms res'
             return $ Body decs_ stms res'
           else
             return $ Body decs_ stms_ res_
@@ -498,28 +497,31 @@ revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux cOp@(BasicOp CmpOp{})) = do
   return (mempty, oneStm stm)
 
 revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (BinOp op (Var x) (Var y)))) = do
-  (_p, us1, s1) <- inScopeOf (p, LParamName t) $ lookupAdj $ patElemName pat
-  (_x, us2, s2) <- lookupAdj x
-  (_y, us3, s3) <- lookupAdj y
-  let us = us3 <> us2 <> us1
-  let ss = s1 <> s2 <> s3
   case op of
-    op | op' `elem` ["Add", "FAdd"] -> do
-         (_, us4, s4) <- updateAdjoint x _p
-         (_, us5, s5) <- updateAdjoint y _p
-         return $ (us5 <> us4 <> us, ss <> s4 <> s5)
-    op | op' `elem` ["Sub", "FSub"] -> do
-         (_p', s4) <- runADBind (bindEnv op) $ getVar <$> (do zero <- mkConstM 0; zero -^ Var _p)
-         (_, us4, s5) <- updateAdjoint x _p'
-         (_, us5, s6) <- updateAdjoint y _p'
-         return $ (us5 <> us4 <> us, ss <> s4 <> s5 <> s6)
+    op | op' `elem` ["LogAnd", "LogOr"] -> return (mempty, mempty)
+    op -> do
+      (_p, us1, s1) <- inScopeOf (p, LParamName t) $ lookupAdj $ patElemName pat
+      (_x, us2, s2) <- lookupAdj x
+      (_y, us3, s3) <- lookupAdj y
+      let us = us3 <> us2 <> us1
+      let ss = s1 <> s2 <> s3
+      case op of
+        op | op' `elem` ["Add", "FAdd"] -> do
+             (_, us4, s4) <- updateAdjoint x _p
+             (_, us5, s5) <- updateAdjoint y _p
+             return $ (us5 <> us4 <> us, ss <> s4 <> s5)
+        op | op' `elem` ["Sub", "FSub"] -> do
+             (_p', s4) <- runADBind (bindEnv op) $ getVar <$> (do zero <- mkConstM 0; zero -^ Var _p)
+             (_, us4, s5) <- updateAdjoint x _p'
+             (_, us5, s6) <- updateAdjoint y _p'
+             return $ (us5 <> us4 <> us, ss <> s4 <> s5 <> s6)
 
-    op | op' `elem` ["Mul", "FMul"] -> do
-         (_x', s4) <- runADBind (bindEnv op) $ getVar <$> Var _p *^ Var y
-         (_y', s5) <- runADBind (bindEnv op) $ getVar <$> Var _p *^ Var x
-         (_, us4, s6) <- updateAdjoint x _x'
-         (_, us5, s7) <- updateAdjoint y _y'
-         return $ (us5 <> us4 <> us, ss <> s4 <> s5 <> s6 <> s7)
+        op | op' `elem` ["Mul", "FMul"] -> do
+             (_x', s4) <- runADBind (bindEnv op) $ getVar <$> Var _p *^ Var y
+             (_y', s5) <- runADBind (bindEnv op) $ getVar <$> Var _p *^ Var x
+             (_, us4, s6) <- updateAdjoint x _x'
+             (_, us5, s7) <- updateAdjoint y _y'
+             return $ (us5 <> us4 <> us, ss <> s4 <> s5 <> s6 <> s7)
   where op' = showConstr $ toConstr op
 
 revStm stm@(Let (Pattern [] pats) aux (If cond t@(Body _ t_stms t_res) f@(Body _ f_stms f_res) attr)) = do
@@ -566,13 +568,52 @@ revStm stm@(Let (Pattern [] pats) aux (If cond t@(Body _ t_stms t_res) f@(Body _
                                     Constant{} -> []
                                     Var v      -> [v])
 
-revStm stm@(Let (Pattern [] pats) aux (BasicOp (Index v slice))) = do
-  undefined
+revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (Index v slice))) = do
+  (_p, us1, s1) <- inScopeOf (p, LParamName t) $ lookupAdj $ patElemName pat
+  (_v, us2, s2) <- lookupAdj v
+  t <- lookupType v
+  (_v', s3) <- inScopeOf (_v, LParamName t) $ runBinderT' $ do
+    _vslice <- letExp (baseString _v ++ "_slice") $ BasicOp $ Index _v slice
+    t' <- lookupType _vslice
+    _vslice'<- addArrays t' _vslice _p
+    letInPlace "updated_adj" _v slice _vslice'
+  let us3 = M.singleton v _v'
+  insAdjMap us3
+  return (us3 <> us2 <> us1, s1 <> s2 <> s3)
+
+  where  bop = case elemType t of
+           IntType it -> Add it OverflowWrap
+           FloatType ft -> FAdd ft
+
+         addArrays t xs ys = 
+           case (shapeDims . arrayShape) t of
+             [] -> return $ BasicOp $ BinOp bop (Var xs) (Var ys)
+             (s:ss) -> do
+               lam <- addArrays' $ modifyArrayShape (const (Shape ss)) t
+               return $ Op $ Screma s (mapSOAC lam) [xs, ys]
+         addArrays' t =
+           case (shapeDims . arrayShape) t of
+             [] -> binOpLambda bop (elemType t)
+             (s:ss) -> do
+               xs <- newVName "xs"
+               ys <- newVName "ys"
+               let t' = modifyArrayShape (const (Shape ss)) t
+               lam <- addArrays' t'
+               body <- insertStmsM $ do
+                 res <- letSubExp "lam_map" $ Op $ Screma s (mapSOAC lam) [xs, ys]
+                 return $ resultBody [res]
+               return Lambda { lambdaParams     = [Param xs t', Param ys t']
+                             , lambdaReturnType = [t']
+                             , lambdaBody       = body
+                             }
   
 revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (SubExp (Var v)))) = do
   (_p, us1, s1) <- inScopeOf (p, LParamName t) $ lookupAdj $ patElemName pat
   (_, us2, s2)  <- updateAdjoint v _p
   return (us2 <> us1, s1 <> s2)
+  
+revStm (Let Pattern{} aux (BasicOp Assert{})) =
+  return (mempty, mempty)
 
 revStm stm = error $ "unsupported stm: " ++ pretty stm ++ "\n\n\n" ++ show stm
 
@@ -582,10 +623,6 @@ revFwdStms (stm :<| stms) = do
   fwdStms <- revFwdStms stms
   return $ fwdStm <> fwdStms
 revFwdStms mempty = return mempty
-
---revFwdBody :: Body -> ADM Body
---revFwdBody b@(Body desc stms res) = do
---  fwdStms <- revFwdStms stms
 
 revStms :: Stms SOACS -> ADM (M.Map VName VName, Stms SOACS, Stms SOACS)
 revStms stms = revStms' stms
@@ -601,7 +638,7 @@ revStms' stms = revStms' stms
   where  revStms' (stms  :|> stm) = do
            (u, _stm)   <- revStm stm
            (us, _stms) <- revStms' stms
-           return (us <> u, _stms <> _stm)
+           return (us <> u, _stm <> _stms)
          revStms' mempty = return (M.empty, mempty)
 
 revBody :: Body -> ADM (M.Map VName VName, Body, Body)
@@ -880,14 +917,16 @@ revFun consts fundef@(FunDef entry name ret params body@(Body decs stms res)) = 
   let initial_renv = REnv { tans = mempty, envScope = mempty }
   flip runADM initial_renv $ inScopeOf consts $ inScopeOf fundef $ inScopeOf stms $ do
     let rvars  = concatMap (\se -> case se of Constant{} -> []; Var v -> [v]) res
+    
     _params <- zipWithM (\v t -> do
                            _v <- adjVName v
                            insAdj v _v
-                           return $ Param _v (removeExtShapes t)) rvars ret
-
-    --(body_us, fwdBody@(Body fwdDecs fwdStms fwdRes), _body@(Body _decs _stms _res)) <- revBody' body
-    (body_us, _body@(Body _decs _stms _res)) <- revBody' body
-    --(body_us, fwdBody@(Body fwdDecs fwdStms fwdRes), _body) <- revBody body
+                           _t <- lookupType v
+                           --return $ Param _v (removeExtShapes t)) rvars ret
+                           return $ Param _v (toDecl _t Nonunique)) rvars ret
+               
+    (body_us, fwdBody@(Body fwdDecs fwdStms fwdRes), _body) <- revBody body
+    
     (Body _decs _stms _res) <- renameBody _body
     let _rvars = concatMap (\se -> case se of Constant{} -> []; Var v -> [v]) _res
 
@@ -906,11 +945,10 @@ revFun consts fundef@(FunDef entry name ret params body@(Body decs stms res)) = 
     let rev = fundef { funDefEntryPoint = (\(as1, rs1) (as2, rs2) -> (as1 ++ as2, rs1 ++ rs2)) <$> entry <*> _entry
                     , funDefRetType = _ret
                     , funDefParams = params ++ _params
-                   -- , funDefBody = Body _decs (fwdStms <> _stms) _res
-                    , funDefBody = Body _decs _stms _res
+                    , funDefBody = Body _decs (fwdStms <> _stms) _res
                     }
-    traceM $ "\n" ++ "fundef" ++ pretty fundef
-    traceM $ "\n" ++ "ret" ++ pretty rev
+    traceM $ "\nprimal:\n" ++ pretty fundef
+    traceM $ "\nreverse:\n" ++ pretty rev
     return rev
     where removeExtShapes :: DeclExtType -> DeclType
           removeExtShapes (Prim t) = Prim t
