@@ -607,10 +607,12 @@ revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (Index v slice))) 
                  
 --revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (Update v slice se))) = do
   
-revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (SubExp (Var v)))) = do
-  (_p, us1, s1) <- inScopeOf (p, LParamName t) $ lookupAdj $ patElemName pat
-  (_, us2, s2)  <- updateAdjoint v _p
-  return (us2 <> us1, s1 <> s2)
+revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (SubExp se)))
+  | Var v <- se = do
+    (_p, us1, s1) <- inScopeOf (p, LParamName t) $ lookupAdj $ patElemName pat
+    (_, us2, s2)  <- updateAdjoint v _p
+    return (us2 <> us1, s1 <> s2)
+  | otherwise = return (mempty, mempty)
   
 revStm (Let Pattern{} aux (BasicOp Assert{})) =
   return (mempty, mempty)
