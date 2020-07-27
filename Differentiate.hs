@@ -175,12 +175,37 @@ insAdjMap update = modify $ \env -> env { adjs = update `M.union` adjs env }
 lookupTape :: VName -> ADM (Maybe VName)
 lookupTape v = gets $ M.lookup v . tape
 
-lookupAdj :: VName -> ADM (VName, M.Map VName VName, Stms SOACS)
-lookupAdj v = do
-  maybeAdj <- gets $ M.lookup v . adjs
-  case maybeAdj of
-    Nothing -> newAdj v
-    Just _v -> return (_v, mempty, mempty)
+class Adjoint a where
+  lookupAdj :: a -> ADM (VName, M.Map VName VName, Stms SOACS)
+  updateAdjoint :: a -> VName -> ADM (VName, M.Map VName VName, Stms SOACS)
+  
+instance Adjoint VName where
+  lookupAdj v = do
+    maybeAdj <- gets $ M.lookup v . adjs
+    case maybeAdj of
+      Nothing -> newAdj v
+      Just _v -> return (_v, mempty, mempty)
+      
+  updateAdjoint v d = do
+    benv <- mkBEnv v
+    maybeAdj <- gets $ M.lookup v . adjs
+    case maybeAdj of
+      Nothing -> setAdjoint v (BasicOp . SubExp . Var $ d)
+      Just _v -> do
+        (_v', stms) <- runADBind benv $ getVar <$> (Var _v +^ Var d)
+        let update = M.singleton v _v'
+        insAdjMap update
+        return (_v', update, stms)
+
+      
+instance Adjoint SubExp where
+  lookupAdj (Constant c) = do
+      (_v, stms) <- runBinderT' $ letExp "const_adj" =<< eBlank (Prim $ primValueType c)
+      return $ (_v, mempty, stms)
+  lookupAdj (Var v) = lookupAdj v
+
+  updateAdjoint se@(Constant c) _ = lookupAdj se
+  updateAdjoint (Var v) d = updateAdjoint v d
 
 localS :: MonadState s m => (s -> s) -> m a -> m a
 localS f m = do
@@ -201,18 +226,6 @@ setAdjoint v e = do
   let update = M.singleton v _v
   insAdjMap update
   return (_v, update, stms)
-
-updateAdjoint :: VName -> VName -> ADM (VName, M.Map VName VName, Stms SOACS)
-updateAdjoint v d = do
-  benv <- mkBEnv v
-  maybeAdj <- gets $ M.lookup v . adjs
-  case maybeAdj of
-    Nothing -> setAdjoint v (BasicOp . SubExp . Var $ d)
-    Just _v -> do
-      (_v', stms) <- runADBind benv $ getVar <$> (Var _v +^ Var d)
-      let update = M.singleton v _v'
-      insAdjMap update
-      return (_v', update, stms)
 
 class TanBinder a where
   mkTan :: a -> ADM a
@@ -272,21 +285,6 @@ instance Tangent Stm where
   type TangentType Stm = TanStm
   tangent = (flip fwdStm) return
 
-class Adjoint a where
-  adjoint :: a -> ADM VName
-  
-instance Adjoint VName where
-  adjoint v = do
-   maybeAdj <- gets $ M.lookup v . adjs
-   case maybeAdj of
-        Just adj -> return adj
-        Nothing ->  error $ "oops: " ++ show v
-  
-instance Adjoint (Param decl) where
-  adjoint (Param p t) = adjoint p
-  
-instance Adjoint (PatElemT decl) where
-  adjoint (PatElem p t) = adjoint p
 
 mkBEnv v = do
   t <- lookupType v
@@ -496,7 +494,7 @@ revStm stm@(Let (Pattern [] pats) aux (DoLoop [] valpats loop@(ForLoop v it boun
 revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux cOp@(BasicOp CmpOp{})) = do
   return (mempty, oneStm stm)
 
-revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (BinOp op (Var x) (Var y)))) = do
+revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (BinOp op x y))) = do
   case op of
     op | op' `elem` ["LogAnd", "LogOr"] -> return (mempty, mempty)
     op -> do
@@ -517,8 +515,8 @@ revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (BinOp op (Var x) 
              return $ (us5 <> us4 <> us, ss <> s4 <> s5 <> s6)
 
         op | op' `elem` ["Mul", "FMul"] -> do
-             (_x', s4) <- runADBind (bindEnv op) $ getVar <$> Var _p *^ Var y
-             (_y', s5) <- runADBind (bindEnv op) $ getVar <$> Var _p *^ Var x
+             (_x', s4) <- runADBind (bindEnv op) $ getVar <$> Var _p *^ y
+             (_y', s5) <- runADBind (bindEnv op) $ getVar <$> Var _p *^ x
              (_, us4, s6) <- updateAdjoint x _x'
              (_, us5, s7) <- updateAdjoint y _y'
              return $ (us5 <> us4 <> us, ss <> s4 <> s5 <> s6 <> s7)
@@ -606,6 +604,8 @@ revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (Index v slice))) 
                              , lambdaReturnType = [t']
                              , lambdaBody       = body
                              }
+                 
+--revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (Update v slice se))) = do
   
 revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (SubExp (Var v)))) = do
   (_p, us1, s1) <- inScopeOf (p, LParamName t) $ lookupAdj $ patElemName pat
