@@ -115,7 +115,7 @@ Reading a variable that isn't in a map always returns 0:
 }
 \end{figure}
 \newpage
-\subsection*{Reverse pass ($\upuparrows$)}
+\subsection*{Reverse pass ($\Rightarrow_{R}$)}
 \begin{figure}[!h] 
 \centering
 \fbox{
@@ -130,7 +130,7 @@ Reading a variable that isn't in a map always returns 0:
   \seq{reset} = \Map~(\fn\_.~\mathbf 0)~\seq{\hat{x}} \\
   \Lambda_1' = \Lambda_1,~\seq{x} \mapsto \seq{\hat{x}},~\seq{fv} \mapsto \seq{\hat{fv}},~\seq{rs} \mapsto \seq{\hat{rs}} \\
   \hat{e}_{body} = \Let{\seq{\hat{z}}}{\hat{e}_{body}'}{\seq{\hat{z}}} \\
-  (\ctxb{\Lambda_1'}{e_{body}}) \upuparrows (\ctxb{\Lambda_2}{\hat{e}_{body}}) \\
+  (\ctxb{\Lambda_1'}{e_{body}}) \Rightarrow_{R} (\ctxb{\Lambda_2}{\hat{e}_{body}}) \\
   \Lambda_{2,\Delta fv} = \{ v \mapsto \hat{v} \mid v \in \seq{fv}, (v \mapsto \hat{v}) \in \Lambda_{2} \setminus \Lambda_1'\} \\
   \Lambda_{2,rs} = \{ r \mapsto \hat{r} \mid r \in \seq{rs}, (r \mapsto \hat{r}) \in \Lambda_{2}\} \\
   \hat{e}_{body}'' = \Let{\seq{rs}}{\Omega[y]}{(\Let{\seq{\hat{z}'}}{\hat{e}_{body}'}{(\seq{reset}, im(\Lambda_{2,rs}), im(\Lambda_{2,\Delta fv})}))} \\
@@ -140,13 +140,13 @@ Reading a variable that isn't in a map always returns 0:
 }
             {
                     \ctxb{\Lambda_1}{e_{loop}}
-                    \upuparrows \left(\ctxb{\Lambda_3}{\Let{(\_~,\seq{\hat{rs}'}, \seq{\hat{fv}'})}{\hat{e}_{loop}}{(\Let{\seq{\hat{fv}''}}{(\Map~(+)~\seq{\hat{fv}'}~\seq{\hat{rs}'})}{\seq{\hat{fv}''}}})}\right)\\
+                    \Rightarrow_{R} \left(\ctxb{\Lambda_3}{\Let{(\_~,\seq{\hat{rs}'}, \seq{\hat{fv}'})}{\hat{e}_{loop}}{(\Let{\seq{\hat{fv}''}}{(\Map~(+)~\seq{\hat{fv}'}~\seq{\hat{rs}'})}{\seq{\hat{fv}''}}})}\right)\\
             }
 
 \inferrule* [right=RevIF]
             {
-  \ctxb{\Lambda}{e_t} \upuparrows \ctxb{\Lambda_t}{\Let{\seq{\hat{fv}}_t}{\hat{e}_t}}{\seq{\hat{fv}}_t}\\
-  \ctxb{\Lambda}{e_f} \upuparrows \ctxb{\Lambda_f}{\Let{\seq{\hat{fv}}_f}{\hat{e}_f}}{\seq{\hat{fv}}_f}\\
+  \ctxb{\Lambda}{e_t} \Rightarrow_{R} \ctxb{\Lambda_t}{\Let{\seq{\hat{fv}}_t}{\hat{e}_t}}{\seq{\hat{fv}}_t}\\
+  \ctxb{\Lambda}{e_f} \Rightarrow_{R} \ctxb{\Lambda_f}{\Let{\seq{\hat{fv}}_f}{\hat{e}_f}}{\seq{\hat{fv}}_f}\\
   \Lambda_{\Delta_t} = \Lambda \setminus \Lambda_t \\
   \Lambda_{\Delta_f} = \Lambda \setminus \Lambda_f \\
   %\Lambda_{\cup} = \Lambda_{\Delta_t} \cup \Lambda_{\Delta_f} \\
@@ -159,7 +159,7 @@ Reading a variable that isn't in a map always returns 0:
   \Lambda' = \Lambda, ~\left(dom\left(\Lambda_{\Delta_t} \cup \Lambda_{\Delta_f}\right) \mapsto \seq{\hat{res}}\right)
 }
 {
-  \ctxb{\Lambda}{\Let{\seq{res}}{\If{e_p}{e_t}{e_f}}}{\seq{res}}\upuparrows \ctxb{\Lambda'}{\Let{\seq{\hat{res}}}{\If{e_p}{\hat{e}_t'}{\hat{e}_f'}}{\seq{\hat{res}}}}
+  \ctxb{\Lambda}{\Let{\seq{res}}{\If{e_p}{e_t}{e_f}}}{\seq{res}}\Rightarrow_{R} \ctxb{\Lambda'}{\Let{\seq{\hat{res}}}{\If{e_p}{\hat{e}_t'}{\hat{e}_f'}}{\seq{\hat{res}}}}
 }
 \end{mathpar}
 }
