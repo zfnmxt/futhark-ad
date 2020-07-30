@@ -4,6 +4,7 @@
 {-# LANGUAGE MultiParamTypeClasses      #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# OPTIONS_GHC -fno-warn-missing-fields #-}
@@ -178,6 +179,7 @@ lookupTape v = gets $ M.lookup v . tape
 class Adjoint a where
   lookupAdj :: a -> ADM (VName, M.Map VName VName, Stms SOACS)
   updateAdjoint :: a -> VName -> ADM (VName, M.Map VName VName, Stms SOACS)
+  updateAdjointArray :: Maybe (Slice (SubExp)) -> a -> VName -> ADM (VName, M.Map VName VName, Stms SOACS) 
   
 instance Adjoint VName where
   lookupAdj v = do
@@ -197,7 +199,59 @@ instance Adjoint VName where
         insAdjMap update
         return (_v', update, stms)
 
-      
+  updateAdjointArray maybe_slice v d = do
+    benv <- mkBEnv v
+    maybeAdj <- gets $ M.lookup v . adjs
+    t <- lookupType v
+    case maybeAdj of
+      Nothing -> do
+          (_v, us1, s1) <- lookupAdj v
+          (_v', us2, s2) <- updateAdjointArray maybe_slice v d
+          return (_v', us2 <> us1, s1 <> s2)
+      Just _v -> do
+        (_v', stms) <- inScopeOf (_v, LParamName t) $ runBinderT' $
+          case maybe_slice of
+            Nothing -> do
+              t'  <- lookupType _v
+              letExp "updated_adj" =<< addArrays t' _v d
+              
+            Just slice -> do
+              _vslice <- if primType t
+                           then return _v
+                           else letExp (baseString _v ++ "_slice") $ BasicOp $ Index _v slice
+              t' <- lookupType _vslice
+              _vslice' <- addArrays t' _vslice d
+              letInPlace "updated_adj" _v slice _vslice'
+        let us = M.singleton v _v'
+        insAdjMap us
+        return (_v', us, stms)
+        
+   where  bop t = case elemType t of
+            IntType it -> Add it OverflowWrap
+            FloatType ft -> FAdd ft
+
+          addArrays t xs ys = 
+            case (shapeDims . arrayShape) t of
+              [] -> return $ BasicOp $ BinOp (bop t) (Var xs) (Var ys)
+              (s:ss) -> do
+                lam <- addArrays' $ modifyArrayShape (const (Shape ss)) t
+                return $ Op $ Screma s (mapSOAC lam) [xs, ys]
+          addArrays' t =
+            case (shapeDims . arrayShape) t of
+              [] -> binOpLambda (bop t) (elemType t)
+              (s:ss) -> do
+                xs <- newVName "xs"
+                ys <- newVName "ys"
+                let t' = modifyArrayShape (const (Shape ss)) t
+                lam <- addArrays' t'
+                body <- insertStmsM $ do
+                  res <- letSubExp "lam_map" $ Op $ Screma s (mapSOAC lam) [xs, ys]
+                  return $ resultBody [res]
+                return Lambda { lambdaParams     = [Param xs t', Param ys t']
+                              , lambdaReturnType = [t']
+                              , lambdaBody       = body
+                              }
+
 instance Adjoint SubExp where
   lookupAdj (Constant c) = do
       (_v, stms) <- runBinderT' $ letExp "const_adj" =<< eBlank (Prim $ primValueType c)
@@ -206,6 +260,9 @@ instance Adjoint SubExp where
 
   updateAdjoint se@(Constant c) _ = lookupAdj se
   updateAdjoint (Var v) d = updateAdjoint v d
+  
+  updateAdjointArray _ se@(Constant c) _ = lookupAdj se
+  updateAdjointArray maybe_slice (Var v) d = updateAdjointArray maybe_slice v d
 
 localS :: MonadState s m => (s -> s) -> m a -> m a
 localS f m = do
@@ -315,7 +372,6 @@ revFwdStm stm@(Let (Pattern [] pats) aux (DoLoop [] valpats (ForLoop v it bound 
             res <- letInPlace "update_acc" accLoop
               (fullSlice arr_t (map DimFix is')) $ BasicOp $ SubExp v'
             return $ Var  res
-            --letSubExp "update_acc" =<< eWriteArray accLoop [toExp v] (toExp $ paramName param)
       addStms stms
       return accsLoop'
     let body' = Body decs bodyStms $ res ++ accsLoop'
@@ -471,7 +527,7 @@ revStm stm@(Let (Pattern [] pats) aux (DoLoop [] valpats loop@(ForLoop v it boun
 
           let changed_fv_map = M.restrictKeys adj_map(S.fromList fv)
 
-          return $ (changed_fv_map, fwdStms <> boundStms <> _iter_reset_stms <> mconcat free_stms <> mconcat loopres_stms <> oneStm _stm <> mconcat final_contrib_stms)
+          return (changed_fv_map, fwdStms <> boundStms <> _iter_reset_stms <> mconcat free_stms <> mconcat loopres_stms <> oneStm _stm <> mconcat final_contrib_stms)
 
         where mkBindings =
                 zipWithM $ \_b _v -> do
@@ -568,44 +624,20 @@ revStm stm@(Let (Pattern [] pats) aux (If cond t@(Body _ t_stms t_res) f@(Body _
 
 revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (Index v slice))) = do
   (_p, us1, s1) <- inScopeOf (p, LParamName t) $ lookupAdj $ patElemName pat
-  (_v, us2, s2) <- lookupAdj v
-  t <- lookupType v
-  (_v', s3) <- inScopeOf (_v, LParamName t) $ runBinderT' $ do
-    _vslice <- letExp (baseString _v ++ "_slice") $ BasicOp $ Index _v slice
-    t' <- lookupType _vslice
-    _vslice'<- addArrays t' _vslice _p
-    letInPlace "updated_adj" _v slice _vslice'
-  let us3 = M.singleton v _v'
-  insAdjMap us3
-  return (us3 <> us2 <> us1, s1 <> s2 <> s3)
-
-  where  bop = case elemType t of
-           IntType it -> Add it OverflowWrap
-           FloatType ft -> FAdd ft
-
-         addArrays t xs ys = 
-           case (shapeDims . arrayShape) t of
-             [] -> return $ BasicOp $ BinOp bop (Var xs) (Var ys)
-             (s:ss) -> do
-               lam <- addArrays' $ modifyArrayShape (const (Shape ss)) t
-               return $ Op $ Screma s (mapSOAC lam) [xs, ys]
-         addArrays' t =
-           case (shapeDims . arrayShape) t of
-             [] -> binOpLambda bop (elemType t)
-             (s:ss) -> do
-               xs <- newVName "xs"
-               ys <- newVName "ys"
-               let t' = modifyArrayShape (const (Shape ss)) t
-               lam <- addArrays' t'
-               body <- insertStmsM $ do
-                 res <- letSubExp "lam_map" $ Op $ Screma s (mapSOAC lam) [xs, ys]
-                 return $ resultBody [res]
-               return Lambda { lambdaParams     = [Param xs t', Param ys t']
-                             , lambdaReturnType = [t']
-                             , lambdaBody       = body
-                             }
+  (_, us2, s2) <- updateAdjointArray (Just slice) v _p
+  return $ (us2 <> us1, s1 <> s2)
                  
---revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (Update v slice se))) = do
+revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (Update v slice se))) = do
+  (_p, us1, s1) <- inScopeOf (p, LParamName t) $ lookupAdj $ patElemName pat
+  (_pslice, s2) <- inScopeOf (_p, LParamName t) $ runBinderT' $ letExp (baseString _p ++ "_slice") $ BasicOp $ Index _p slice
+  (_se, us3, s3) <- updateAdjointArray Nothing se _pslice
+  (_v, us4, s4) <- lookupAdj  v
+  t' <- case se of
+          Constant c -> return $ Prim $ primValueType c
+          Var v -> lookupType v
+  (_vslice, s5) <- inScopeOf (_v, LParamName t') $ runBinderT' $ letExp (baseString _v ++ "_slice") $ BasicOp $ Index _v slice
+  (_se', us6, s6) <- updateAdjoint se _vslice
+  return (us6 <> us4<> us3 <> us1, s1 <> s2 <> s3 <> s4 <> s5 <> s6)
   
 revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (SubExp se)))
   | Var v <- se = do
@@ -614,6 +646,14 @@ revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (BasicOp (SubExp se)))
     return (us2 <> us1, s1 <> s2)
   | otherwise = return (mempty, mempty)
   
+revStm stm@(Let (Pattern [] p) aux (BasicOp (Reshape change v))) = do
+    maybeAdj <- gets $ M.lookup v . adjs
+    case maybeAdj of
+      Nothing -> return (mempty, mempty)
+      Just _v -> do
+        (_v', stms) <- runBinderT' $ letExp "reshape_adj" (BasicOp (Reshape change _v))
+        return (M.singleton v _v', stms)
+
 revStm (Let Pattern{} aux (BasicOp Assert{})) =
   return (mempty, mempty)
 
@@ -918,6 +958,7 @@ revFun :: Stms SOACS -> FunDef SOACS -> PassM (FunDef SOACS)
 revFun consts fundef@(FunDef entry name ret params body@(Body decs stms res)) = do
   let initial_renv = REnv { tans = mempty, envScope = mempty }
   flip runADM initial_renv $ inScopeOf consts $ inScopeOf fundef $ inScopeOf stms $ do
+    traceM $ pretty fundef ++ "\n" ++ show fundef ++ "\n"
     let rvars  = concatMap (\se -> case se of Constant{} -> []; Var v -> [v]) res
     
     _params <- zipWithM (\v t -> do
