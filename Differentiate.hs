@@ -64,6 +64,7 @@ import           Futhark.Util.Options
 import           Futhark.Util.Pretty                       (pretty)
 
 
+deriving instance Data Safety
 deriving instance Data BinOp
 deriving instance Data Overflow
 deriving instance Data IntType
@@ -227,22 +228,22 @@ instance Adjoint VName where
         return (_v', us, stms)
         
    where  bop t = case elemType t of
-            IntType it -> Add it OverflowWrap
-            FloatType ft -> FAdd ft
+            ElemPrim (IntType it) -> Add it OverflowWrap
+            ElemPrim (FloatType ft) -> FAdd ft
 
           addArrays t xs ys = 
             case (shapeDims . arrayShape) t of
               [] -> return $ BasicOp $ BinOp (bop t) (Var xs) (Var ys)
               (s:ss) -> do
-                lam <- addArrays' $ modifyArrayShape (const (Shape ss)) t
+                lam <- addArrays' $ t `setArrayShape` Shape ss
                 return $ Op $ Screma s (mapSOAC lam) [xs, ys]
           addArrays' t =
             case (shapeDims . arrayShape) t of
-              [] -> binOpLambda (bop t) (elemType t)
+              [] -> binOpLambda (bop t) $ case elemType t of ElemPrim pt -> pt
               (s:ss) -> do
                 xs <- newVName "xs"
                 ys <- newVName "ys"
-                let t' = modifyArrayShape (const (Shape ss)) t
+                let t' = t `setArrayShape` Shape ss
                 lam <- addArrays' t'
                 body <- insertStmsM $ do
                   res <- letSubExp "lam_map" $ Op $ Screma s (mapSOAC lam) [xs, ys]
@@ -379,7 +380,7 @@ revFwdStm stm@(Let (Pattern [] pats) aux (DoLoop [] valpats (ForLoop v it bound 
                DoLoop [] (valpats ++ emptyAccs) (ForLoop v it bound []) body'
     lift $ zipWithM_ (\pat acc -> insTape (patElemName pat) acc) pats accs
   return stms
-  where accType n u (Prim t)                 = Array t (Shape [n]) u
+  where accType n u (Prim t)                 = Array (ElemPrim t) (Shape [n]) u
         accType n _ (Array t (Shape dims) u) = Array t (Shape (n:dims)) u
         accType _ _ Mem{}                    = error "Mem type encountered."
 
@@ -731,7 +732,7 @@ revBody' b@(Body desc stms res) = do
 (//^) x y = do
   numEnv <- ask
   let op = case numEnv of
-             IntEnv it _ -> SDiv it
+             IntEnv it _ -> SDiv it Unsafe
              FloatEnv ft -> FDiv ft
   lift $ letSubExp "//^" $ BasicOp (BinOp op x y)
 
@@ -755,8 +756,8 @@ bindEnv (Sub it ovf) = IntEnv it ovf
 bindEnv (FSub ft)    = FloatEnv ft
 bindEnv (Mul it ovf) = IntEnv it ovf
 bindEnv (FMul ft)    = FloatEnv ft
-bindEnv (UDiv it)    = IntEnv it OverflowWrap
-bindEnv (SDiv it)    = IntEnv it OverflowWrap
+bindEnv (UDiv it _)  = IntEnv it OverflowWrap
+bindEnv (SDiv it _)  = IntEnv it OverflowWrap
 bindEnv (FDiv ft)    = FloatEnv ft
 bindEnv (Pow it)     = IntEnv it OverflowWrap
 bindEnv (FPow ft)    = FloatEnv ft
@@ -955,7 +956,7 @@ fwdPass =
        }
 
 revFun :: Stms SOACS -> FunDef SOACS -> PassM (FunDef SOACS)
-revFun consts fundef@(FunDef entry name ret params body@(Body decs stms res)) = do
+revFun consts fundef@(FunDef entry _attrs name ret params body@(Body decs stms res)) = do
   let initial_renv = REnv { tans = mempty, envScope = mempty }
   flip runADM initial_renv $ inScopeOf consts $ inScopeOf fundef $ inScopeOf stms $ do
     traceM $ pretty fundef ++ "\n" ++ show fundef ++ "\n"

@@ -79,11 +79,11 @@ commands = sortOn fst
 mkPython :: Pass SOACS SOACS -> String -> [String] -> IO ()
 mkPython p = compilerMain () []
        "Compile sequential Python" "Generate sequential Python code from optimised Futhark program."
-       (sequentialCpuADPipeline p) $ \() mode outpath prog -> do
+       (sequentialCpuADPipeline p) $ \_ () mode outpath prog -> do
           let class_name =
                 case mode of ToLibrary    -> Just $ takeBaseName outpath
                              ToExecutable -> Nothing
-          pyprog <- SequentialPy.compileProg class_name prog
+          (_, pyprog) <- SequentialPy.compileProg class_name prog
 
           case mode of
             ToLibrary ->
