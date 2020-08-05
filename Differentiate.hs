@@ -526,7 +526,7 @@ revStm stm@(Let (Pattern [] pats) aux (DoLoop [] valpats loop@(ForLoop v it boun
 
           adj_map <- gets adjs
 
-          let changed_fv_map = M.restrictKeys adj_map(S.fromList fv)
+          let changed_fv_map = M.restrictKeys adj_map $ S.fromList (fv ++ namesToList (freeIn (map snd valpats)))
 
           return (changed_fv_map, fwdStms <> boundStms <> _iter_reset_stms <> mconcat free_stms <> mconcat loopres_stms <> oneStm _stm <> mconcat final_contrib_stms)
 
