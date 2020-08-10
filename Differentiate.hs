@@ -17,7 +17,7 @@ import           Control.Monad.Reader
 import           Control.Monad.State.Strict
 import           Data.Data
 import           Data.Functor.Identity
-import           Data.List                                 (nub, sortOn, isPrefixOf, intersect, (\\))
+import           Data.List                                 (nub, sortOn, isPrefixOf, intersect, splitAt, partition, (\\))
 import           Data.Loc
 import qualified Data.Map                                  as M
 import           Data.Maybe
@@ -654,11 +654,113 @@ revStm stm@(Let (Pattern [] p) aux (BasicOp (Reshape change v))) = do
       Just _v -> do
         (_v', stms) <- runBinderT' $ letExp "reshape_adj" (BasicOp (Reshape change _v))
         return (M.singleton v _v', stms)
+        
+revStm stm@(Let (Pattern [] [pat@(PatElem p t)]) aux (Op (Screma n (ScremaForm [] [] f) [xs]))) = do
+  (_p, us1, s1) <- lookupAdj p
+  (_f, bound, fv) <- localS id $ revLambda f
+  (paramsL, paramsR) <- splitAt (length (lambdaReturnType _f)) <$> (mapM (\t -> do v <- newVName "lam_adj"; return $ Param v t) $ lambdaReturnType _f ++ lambdaReturnType _f)
+  (red_res, red_stms) <- runBinderT' $
+        forM (drop (length bound) $ zip paramsL paramsR) $ \(Param l t, Param r _) -> do
+          let _op = case t of
+                      Prim (IntType it) -> Add it OverflowWrap
+                      Prim (FloatType ft) -> FAdd ft
+                      _ -> error "oops"
+          letExp "*" =<< eBinOp _op (toExp l) (toExp r) -- eBinOp _op (toExp p) (eBinOp _op (toExp l) (toExp r))
+
+  let red_f = Lambda { lambdaParams = drop (length bound) paramsL ++ drop (length bound) paramsR
+                     , lambdaBody = mkBody red_stms $ map Var red_res
+                     , lambdaReturnType = drop (length bound) $ lambdaReturnType _f
+                     }
+  (neutral, neutral_stms) <- runBinderT' $ forM (drop (length bound) paramsL) $ \(Param _ t) -> letSubExp "neut_adj" =<< eBlank t
+  let red = Reduce { redComm = Commutative
+                   , redLambda = red_f
+                   , redNeutral = neutral
+                   }
+
+  (_ds, d_stms) <- runBinderT' $ letTupExp "adj_updates" $ Op (Screma n (ScremaForm [] [] _f) [xs, _p])
+
+  idf <- mkIdentityLambda $ drop (length bound) $ lambdaReturnType _f
+  
+  (_d_red, d_stms_red) <- runBinderT' $ letTupExp "adj_updates" $ Op (Screma n (ScremaForm [] [red] idf) (drop (length bound) _ds))
+
+  let -- slice_bound = [DimFix (constant (0::Int32)),  DimSlice (constant (0 :: Int32)) (constant (length bound)) (constant (1 ::Int32))]
+      slice_bound = [DimSlice (constant (0 :: Int32)) (constant (length bound)) (constant (1 ::Int32))]
+      slice_fv = [DimFix (constant (0::Int32)),  DimSlice (constant (length bound)) (constant (length fv)) (constant (1 ::Int32))]
+      
+  --(_fv, _, fv_stms) <- unzip3 <$> (forM (zip fv _d_red) $ \(v, i) -> do
+  --  (d, up_stms) <- runBinderT' $ letExp "red_fv" =<< eIndex (head _d_red) (constant (i :: Int32))
+  --  (_fv', us', fv_stms) <- updateAdjoint v d
+  --  return (_fv', us', up_stms <> fv_stms))
+
+  (_fv, fv_us, fv_stms) <- inScopeOf d_stms_red $ unzip3 <$> (forM (zip fv _d_red) $ uncurry updateAdjoint)
+
+  --(_d_bound, s2) <- inScopeOf d_stms $ runBinderT' $ letExp "foo" $ BasicOp $ Index (head _ds) 
+  --(_d_fv, s3) <- runBinderT' $ letExp $ BasicOp $ Index _d_red slice_fv
+
+  (_xs', us2, s3) <- updateAdjointArray Nothing xs (head _ds)
+
+  -- error $ pretty d_stms
+
+
+  --return $ (us3 <> us2 <> us1, s1 <> s2 <> neutral_stms <> d_stms <> s3)
+  return $ (mconcat fv_us <> us2 <> us1, s1 <> neutral_stms <>  d_stms <> d_stms_red <> mconcat fv_stms <> s3)
 
 revStm (Let Pattern{} aux (BasicOp Assert{})) =
   return (mempty, mempty)
 
 revStm stm = error $ "unsupported stm: " ++ pretty stm ++ "\n\n\n" ++ show stm
+
+revLambda :: Lambda -> ADM (Lambda, [VName], [VName]) --ADM (Lambda, M.Map VName VName)
+revLambda lambda@(Lambda params body@(Body decs stms res) ret) = do
+    let rvars  = concatMap (\se -> case se of Constant{} -> []; Var v -> [v]) res
+    
+    _params <- zipWithM (\v t -> do
+                           _v <- adjVName v
+                           insAdj v _v
+                           _t <- lookupType v
+                           return $ Param _v t) rvars ret
+
+    --let _paramMap = mconcat <$> zipWithM (\v (Param _v _) -> M.singleton v _v) rvars _params
+
+    (body_us, fwdBody@(Body fwdDecs fwdStms fwdRes), _body@(Body _ _ _res')) <- localScope (scopeOfLParams params) $ revBody body
+    
+    (Body _decs _stms _res, subs) <- renameBody' _body
+
+    let body_us' = fmap (subs M.!) body_us
+    
+    let _rvars = concatMap (\se -> case se of Constant{} -> []; Var v -> [v]) _res
+        bound = M.restrictKeys body_us' $ S.fromList $ map paramName params
+        fv = M.restrictKeys body_us' $ S.fromList $ namesToList (freeIn body) \\ M.keys bound
+        (bound_sort, fv_sort) = partition (`elem` M.elems bound) _rvars
+        _res_sort = map Var $ bound_sort ++ fv_sort-- jank, fix
+    
+    _ret <- inScopeOf (stms <> _stms) $ concat <$> forM _res (\se ->
+      case se of
+        Constant{} -> return []
+        Var v -> pure <$> lookupType v)
+
+    let rev = Lambda { lambdaParams = params ++ _params
+                     , lambdaBody = Body _decs (fwdStms <> _stms) _res_sort
+                     , lambdaReturnType = _ret
+                     }
+    return (rev, map (invert body_us' M.!) bound_sort, map (invert body_us' M.!) fv_sort)
+
+    where invert m = M.fromList [(v, k) | (k, v) <- M.toList m]
+          --renameBody' b = modifyNameSource $ runRenamer $ do
+          --    b' <- rename b
+          --    subs <- renamerSubstitutions
+          --    return $ (b', subs)
+          --runRenamer :: RenameM a -> VNameSource -> (a, VNameSource)
+          --runRenamer (RenameM m) src = runReader (runStateT m src) env
+          --  where env = RenameEnv M.empty
+          renameBody' b = do
+            let vs = namesToList $ boundInBody b
+            subs <- mconcat <$> forM vs (\v -> do
+              v' <- newVName (baseString v)
+              return $ M.singleton v v')
+            return (substituteNames subs b, subs)
+
+
 
 revFwdStms :: Stms SOACS -> ADM (Stms SOACS)
 revFwdStms (stm :<| stms) = do
@@ -961,13 +1063,13 @@ revFun consts fundef@(FunDef entry _attrs name ret params body@(Body decs stms r
   flip runADM initial_renv $ inScopeOf consts $ inScopeOf fundef $ inScopeOf stms $ do
     traceM $ pretty fundef ++ "\n" ++ show fundef ++ "\n"
     let rvars  = concatMap (\se -> case se of Constant{} -> []; Var v -> [v]) res
-    
+        rvars' = filter (not . isPrefixOf "impl" . baseString) rvars -- Awful hack, fix
+
     _params <- zipWithM (\v t -> do
                            _v <- adjVName v
                            insAdj v _v
                            _t <- lookupType v
-                           --return $ Param _v (removeExtShapes t)) rvars ret
-                           return $ Param _v (toDecl _t Nonunique)) rvars ret
+                           return $ Param _v (toDecl _t Nonunique)) rvars' ret
                
     (body_us, fwdBody@(Body fwdDecs fwdStms fwdRes), _body) <- revBody body
     
