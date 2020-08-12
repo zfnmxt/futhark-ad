@@ -3,11 +3,12 @@
 \usepackage{mathpazo}
 \usepackage{amssymb,amsthm,amsmath,amsfonts}
 \usepackage{graphicx,color}
+\usepackage{semantic}
 \usepackage{booktabs}
 \usepackage{listings}
 \usepackage{hyperref}
 \usepackage[shortlabels]{enumitem}
-\usepackage[margin=1.0in, marginparwidth=2in]{geometry}
+\usepackage[margin=0.7in, marginparwidth=2in]{geometry}
 
 \input{futhark.tex}
 
@@ -19,6 +20,7 @@
 \newcommand{\LoopR}[5]{\kw{loop}~#1~\texttt{=}~#2~\kw{for}~#3=#4~\kw{to}~0~\kw{do}~#5}
 \newcommand{\update}[2]{#1\mathrel{+}=#2}
 \newcommand\doubleplus{+\kern-1.3ex+\kern0.8ex}
+\newcommand{\tagsc}[1]{\tag{\textsc{#1}}}
 
 \begin{document}
 \section*{Terms}
@@ -120,7 +122,7 @@ Reading a variable that isn't in a map always returns 0:
 \centering
 \fbox{
 \begin{mathpar}
-\inferrule* [right=RevLoop]
+\inferrule* [right=RevForLoop]
             {
               e_{body} = \Let{\seq{rs}}{e_{body}'}{\seq{rs}} \\
   e_{loop} = \Let{\seq{lres}}{\Loop{\seq{x}}{e_0}{y}{e_n}{e_{body}}}{\seq{lres}}\\
@@ -161,8 +163,70 @@ Reading a variable that isn't in a map always returns 0:
 {
   \ctxb{\Lambda}{\Let{\seq{res}}{\If{e_p}{e_t}{e_f}}}{\seq{res}}\Rightarrow_{R} \ctxb{\Lambda'}{\Let{\seq{\hat{res}}}{\If{e_p}{\hat{e}_t'}{\hat{e}_f'}}{\seq{\hat{res}}}}
 }
+
+%\inferrule*[right=RevFunc]
+%           { f = \FnU{\seq{x}}{\Let{\seq{res}}{e}{\seq{rs}}}  \\
+%              \Let{\seq{res}}{e}{\seq{res}}\Rightarrow_F \ctx{\Let{\seq{res}~\seq{x_s}}{e'}{\seq{res}~\seq{x_s}}}{\Omega} \\
+%             \ctxb{\Lambda}{\Let{\seq{res}}{e}{\seq{res}}} \Rightarrow_R \ctxb{\Lambda'}{\hat{e}} \\
+%           }
+%           {
+%            \ctxb{\Lambda}{f} \Rightarrow_R \ctxb{\Lambda'}{\FnU{\seq{x}~(\Lambda'[\seq{res}])}{\Let{\seq{rs}~\seq{x_s}}{e'}{\hat{e}}}}
+%           }
+\inferrule*[right=RevLambda]
+           { f = \FnU{\seq{x}}{\Let{\seq{res}}{e}{\seq{rs}}}  \\
+              \Let{\seq{res}}{e}{\seq{res}}\Rightarrow_F \ctx{\Let{\seq{res}~\seq{x_s}}{e'}{\seq{res}~\seq{x_s}}}{\Omega} \\
+              \ctxb{\Lambda}{\Let{\seq{res}}{e}{\seq{res}}} \Rightarrow_R \ctxb{\Lambda'}{\Let{\seq{\hat{zs}}}{\hat{e}}{\seq{\hat{zs}}}} \\
+              \seq{\hat{bs}} = sort(\{\hat{x} \mid x \in \seq{x}, \Lambda[x] = \hat{x}, \hat{x} \in \seq{\hat{zs}} \}) \\
+              \seq{\hat{fv}} = sort(\seq{\hat{zs}} \setminus \seq{\hat{bs}}) \\
+           }
+           {
+            \ctxb{\Lambda}{\left(\FnU{\seq{x}}{\Let{\seq{res}}{e}{\seq{rs}}}\right)} \Rightarrow_R \ctxb{\Lambda'}{\left(\FnU{\seq{x}~(\Lambda'[\seq{res}])}{\Let{\seq{rs}~\seq{x_s}}{e'}{\Let{\seq{\hat{bs}}~ \seq{\hat{fv}}}{\hat{e}}{(\seq{\hat{bs}}, \seq{\hat{fv}})}}}\right)}
+           }
+
 \end{mathpar}
 }
 \end{figure}
+
+%\begin{align*}
+%            {
+%  e_{body} = \Let{\seq{rs}}{e_{body}'}{\seq{rs}} \\
+%  e_{loop} = \Let{\seq{lres}}{\Loop{\seq{x}}{e_0}{y}{e_n}{e_{body}}}{\seq{lres}}\\
+%  e_{loop} \Rightarrow_F \ctx{e_{loop}'}{\Omega} \\
+%  \seq{fv} = FV(e_{body}) \setminus \seq{x} \\
+%  \seq{\hat{x}},~ \seq{\hat{fv}},~ \seq{\hat{fv}'},~\seq{\hat{fv}''},~\seq{\hat{rs}},~\seq{\hat{rs}'} ~fresh \\
+%  \seq{reset} = \Map~(\fn\_.~\mathbf 0)~\seq{\hat{x}} \\
+%  \Lambda_1' = \Lambda_1,~\seq{x} \mapsto \seq{\hat{x}},~\seq{fv} \mapsto \seq{\hat{fv}},~\seq{rs} \mapsto \seq{\hat{rs}} \\
+%  \hat{e}_{body} = \Let{\seq{\hat{z}}}{\hat{e}_{body}'}{\seq{\hat{z}}} \\
+%  (\ctxb{\Lambda_1'}{e_{body}}) \Rightarrow_{R} (\ctxb{\Lambda_2}{\hat{e}_{body}}) \\
+%  \Lambda_{2,\Delta fv} = \{ v \mapsto \hat{v} \mid v \in \seq{fv}, (v \mapsto \hat{v}) \in \Lambda_{2} \setminus \Lambda_1'\} \\
+%  \Lambda_{2,rs} = \{ r \mapsto \hat{r} \mid r \in \seq{rs}, (r \mapsto \hat{r}) \in \Lambda_{2}\} \\
+%  \hat{e}_{body}'' = \Let{\seq{rs}}{\Omega[y]}{(\Let{\seq{\hat{z}'}}{\hat{e}_{body}'}{(\seq{reset}, im(\Lambda_{2,rs}), im(\Lambda_{2,\Delta fv})}))} \\
+%  \widehat{init} = (\seq{reset},\Lambda_1[\seq{lres}], \Lambda_1[dom(\Lambda_{2,\Delta fv})]) \\
+%  \hat{e}_{loop} = {\LoopR{(\seq{\hat{x}},\seq{\hat{rs}}, \seq{\hat{fv}})}{\widehat{init}}{y}{e_n - 1}{\hat{e}_{body}''}}\\
+%  \Lambda_3 = \Lambda_1 \cup \left(dom(\Lambda_{2,\Delta fv}) \mapsto \seq{\hat{fv}''}\right)
+%}
+%            {
+%                    \ctxb{\Lambda_1}{e_{loop}}
+%                    \Rightarrow_{R} \left(\ctxb{\Lambda_3}{\Let{(\_~,\seq{\hat{rs}'}, \seq{\hat{fv}'})}{\hat{e}_{loop}}{(\Let{\seq{\hat{fv}''}}{(\Map~(+)~\seq{\hat{fv}'}~\seq{\hat{rs}'})}{\seq{\hat{fv}''}}})}\right)\\
+%            }
+%\end{align*}
+
+\begin{align*}
+           \inference{
+             \ctxb{\Lambda}{\left(\FnU{\seq{x}}{e}\right)} \Rightarrow_R \ctxb{\Lambda'}{\left(\FnU{\seq{\hat{x}} ~ \seq{\hat{res}}}{\Let{\seq{x}~\seq{\hat{bs}} ~ \seq{\hat{fv}}}{\hat{e}}{(\seq{\hat{bs}}, \seq{\hat{fv}})}}\right)} \\
+           }
+           { \begin{array}{l}
+               \ctxb{\Lambda}{(\Let{\seq{ys}}{\Map~\left(\FnU{\seq{x}}{e}\right)~\seq{xs}}{\seq{ys}})} \\
+               \hsp\Rightarrow_R \ctxb{\left(\Lambda', \seq{xs} \mapsto \seq{\hat{xs}}, sort(FV(\FnU{\seq{x}}{e})) \mapsto \seq{\hat{fv}}\right)}{} \\
+             \hsp\hsp   \begin{array}[t]{l}
+                  \Let{(\Delta \seq{\hat{xs}}, \Delta \seq{\hat{fvs}})}{\Map \left(\FnU{\seq{\hat{x}} ~ \seq{\hat{res}}}{\Let{\seq{x}~\seq{\hat{bs}} ~ \seq{\hat{fv}}}{\hat{e}}{(\seq{\hat{bs}}, \seq{\hat{fv}})}}\right)~\seq{xs}~(\Lambda_1[\seq{ys}])}{}\\
+                  \Let{\Delta \seq{\hat{fv}}}{\Reduce~(\mathbf{zipwith} (+))~\mathbf{0}~\Delta \seq{\hat{fvs}}}{} \\
+                  \Let{\seq{\hat{xs}}}{\mathbf{updateArray} ~ \seq{xs} ~ \Delta \seq{\hat{xs}}}{} \\
+                  \Let{\seq{\hat{fv'}}}{\mathbf{zipwith}~(+)~\Lambda[sort(FV(\FnU{\seq{x}}{e}))]~\Delta \seq{\hat{fv}}}{(\seq{\hat{xs}}, \seq{\hat{fv}})} \\
+               \end{array}
+          \end{array}
+           }
+\tagsc{RevMap}
+\end{align*}
 
 \end{document}
